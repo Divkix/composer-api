@@ -3,6 +3,8 @@ export interface Env {
   DB: D1Database;
   ENCRYPTION_KEY?: string;
   CURSOR_API_BASE?: string;
+  CURSOR_BACKEND_BASE_URL?: string;
+  CURSOR_CLIENT_VERSION?: string;
   WAITLIST_API_TOKEN?: string;
   WAITLIST_SOURCE?: string;
 }
@@ -61,9 +63,9 @@ export interface CursorPrompt {
   images?: CursorImage[];
 }
 
-export interface CursorRun {
-  agentId: string;
-  runId: string;
+export interface CursorCompletion {
+  requestId: string;
+  conversationId: string;
   stream: Response;
 }
 

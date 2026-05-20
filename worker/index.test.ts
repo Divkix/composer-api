@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { handleRequest } from "./index";
-import { encodeSse } from "./sse";
 import { FakeD1, fakeCtx } from "./test-helpers";
 import type { Deps, Env } from "./types";
 
@@ -9,7 +8,8 @@ function makeEnv(db: FakeD1): Env {
     DB: db as unknown as D1Database,
     ASSETS: { fetch: () => Promise.resolve(new Response("asset")) } as unknown as Fetcher,
     ENCRYPTION_KEY: "test-encryption-secret-with-enough-entropy",
-    CURSOR_API_BASE: "https://api.cursor.test"
+    CURSOR_API_BASE: "https://api.cursor.test",
+    CURSOR_BACKEND_BASE_URL: "https://cursor-backend.test"
   };
 }
 
@@ -64,7 +64,7 @@ describe("Worker", () => {
   it("serves bare /v1/chat/completions with a direct Cursor key and writes no request log", async () => {
     const db = new FakeD1();
     const env = makeEnv(db);
-    const { deps, agentAuthHeaders } = fakeDeps();
+    const { deps, exchangeAuthHeaders } = fakeDeps();
 
     const completion = await handleRequest(
       new Request("https://composer.test/v1/chat/completions", {
@@ -93,14 +93,14 @@ describe("Worker", () => {
     expect(db.accounts.size).toBe(0);
     expect(db.apiKeys.size).toBe(0);
 
-    // The caller's own key is forwarded to Cursor unchanged.
-    expect(agentAuthHeaders).toContain("Bearer cursor_direct_key");
+    // The caller's own key is forwarded only to Cursor's key-exchange endpoint.
+    expect(exchangeAuthHeaders).toContain("Bearer cursor_direct_key");
   });
 
   it("streams SSE chat chunks in direct mode when stream is true", async () => {
     const db = new FakeD1();
     const env = makeEnv(db);
-    const { deps, agentAuthHeaders } = fakeDeps();
+    const { deps, exchangeAuthHeaders } = fakeDeps();
 
     const response = await handleRequest(
       new Request("https://composer.test/v1/chat/completions", {
@@ -129,7 +129,7 @@ describe("Worker", () => {
     expect(body).toContain("data: [DONE]");
 
     expect(db.requestLogs.size).toBe(0);
-    expect(agentAuthHeaders).toContain("Bearer cursor_direct_key");
+    expect(exchangeAuthHeaders).toContain("Bearer cursor_direct_key");
   });
 
   it("streams SSE response events in direct mode for /v1/responses", async () => {
@@ -262,7 +262,7 @@ describe("Worker", () => {
   it("rejects an unknown cmp_ token without forwarding it to Cursor", async () => {
     const db = new FakeD1();
     const env = makeEnv(db);
-    const { deps, agentAuthHeaders } = fakeDeps();
+    const { deps, exchangeAuthHeaders } = fakeDeps();
 
     const completion = await handleRequest(
       new Request("https://composer.test/v1/chat/completions", {
@@ -279,12 +279,13 @@ describe("Worker", () => {
     );
     expect(completion.status).toBe(401);
     // An invalid cmp_ token is never forwarded to Cursor as a Cursor key.
-    expect(agentAuthHeaders).toHaveLength(0);
+    expect(exchangeAuthHeaders).toHaveLength(0);
   });
 });
 
-function fakeDeps(): { deps: Deps; agentAuthHeaders: string[] } {
-  const agentAuthHeaders: string[] = [];
+function fakeDeps(): { deps: Deps; exchangeAuthHeaders: string[]; chatAuthHeaders: string[] } {
+  const exchangeAuthHeaders: string[] = [];
+  const chatAuthHeaders: string[] = [];
   const deps: Deps = {
     now: () => new Date("2026-05-20T12:00:00.000Z"),
     randomUUID: () => "00000000-0000-4000-8000-000000000000",
@@ -301,30 +302,73 @@ function fakeDeps(): { deps: Deps; agentAuthHeaders: string[] } {
           createdAt: "2026-05-20T00:00:00.000Z"
         });
       }
-      if (url.pathname === "/v1/agents" && init?.method === "POST") {
-        agentAuthHeaders.push(auth);
-        const body = JSON.parse(String(init.body || "{}")) as { prompt?: { text?: string }; model?: { id?: string } };
-        expect(body.prompt?.text).toContain("Say hello");
-        expect(body.model?.id).toBe("composer-latest");
-        return Response.json({
-          agent: { id: "bc-00000000-0000-4000-8000-000000000000", latestRunId: "run-00000000-0000-4000-8000-000000000000" },
-          run: { id: "run-00000000-0000-4000-8000-000000000000", status: "RUNNING" }
-        });
+      if (url.pathname === "/auth/exchange_user_api_key" && init?.method === "POST") {
+        exchangeAuthHeaders.push(auth);
+        return Response.json({ accessToken: "cursor_access_token" });
       }
-      if (url.pathname.endsWith("/stream")) {
+      if (url.pathname === "/private-cursor-chat-endpoint" && init?.method === "POST") {
+        chatAuthHeaders.push(auth);
+        expect(new Headers(init.headers).get("content-type")).toContain("application/connect+proto");
+        expect(decodeRequestBody(init.body)).toContain("Say hello");
         return new Response(
           new ReadableStream<Uint8Array>({
             start(controller) {
-              controller.enqueue(encodeSse({ type: "text-delta", text: "Hello from Composer" }, "interaction_update"));
-              controller.enqueue(encodeSse({ status: "FINISHED", result: "Hello from Composer" }, "result"));
+              controller.enqueue(connectFrame(chatResponseThinking("The answer is simple.</think>\nHello from Composer")));
+              controller.enqueue(connectFrame(new TextEncoder().encode("{}"), 2));
               controller.close();
             }
           }),
-          { headers: { "Content-Type": "text/event-stream" } }
+          { headers: { "Content-Type": "application/connect+proto" } }
         );
       }
       return new Response("not found", { status: 404 });
     }
   };
-  return { deps, agentAuthHeaders };
+  return { deps, exchangeAuthHeaders, chatAuthHeaders };
+}
+
+function decodeRequestBody(body: BodyInit | null | undefined): string {
+  if (body instanceof Uint8Array) return new TextDecoder().decode(body);
+  if (body instanceof ArrayBuffer) return new TextDecoder().decode(body);
+  if (typeof body === "string") return body;
+  return "";
+}
+
+function chatResponseThinking(text: string): Uint8Array {
+  return protoMessage([protoField(2, protoMessage([protoField(25, protoMessage([protoField(1, text)]))]))]);
+}
+
+function connectFrame(payload: Uint8Array, flags = 0): Uint8Array {
+  const frame = new Uint8Array(5 + payload.length);
+  frame[0] = flags;
+  new DataView(frame.buffer).setUint32(1, payload.length, false);
+  frame.set(payload, 5);
+  return frame;
+}
+
+function protoMessage(parts: Uint8Array[]): Uint8Array {
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const output = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    output.set(part, offset);
+    offset += part.length;
+  }
+  return output;
+}
+
+function protoField(fieldNumber: number, value: string | Uint8Array): Uint8Array {
+  const data = typeof value === "string" ? new TextEncoder().encode(value) : value;
+  return protoMessage([varint((fieldNumber << 3) | 2), varint(data.length), data]);
+}
+
+function varint(value: number): Uint8Array {
+  const bytes: number[] = [];
+  let current = value;
+  while (current >= 0x80) {
+    bytes.push((current & 0x7f) | 0x80);
+    current >>>= 7;
+  }
+  bytes.push(current);
+  return new Uint8Array(bytes);
 }

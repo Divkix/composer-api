@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": false,
   "type": "module",
-  "description": "OpenAI-compatible Chat Completions and Responses API proxy for Cursor Composer via Cursor Cloud Agent API.",
+  "description": "OpenAI-compatible Chat Completions and Responses API proxy for Cursor Composer.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/standardagents/composer-api.git"

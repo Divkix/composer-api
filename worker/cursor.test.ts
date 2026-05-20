@@ -3,6 +3,47 @@ import { streamCursorText } from "./cursor";
 import { encodeSse } from "./sse";
 
 describe("Cursor stream adapter", () => {
+  it("extracts final text from raw Cursor adapter Connect/protobuf frames", async () => {
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(connectFrame(chatResponseText("Hello")));
+          controller.enqueue(connectFrame(chatResponseText(" from Composer")));
+          controller.enqueue(connectFrame(new TextEncoder().encode("{}"), 2));
+          controller.close();
+        }
+      }),
+      { headers: { "Content-Type": "application/connect+proto" } }
+    );
+    const events = [];
+    for await (const event of streamCursorText(response)) events.push(event);
+    expect(events).toEqual([
+      { type: "text", text: "Hello" },
+      { type: "text", text: " from Composer" },
+      { type: "done", finalText: "Hello from Composer" }
+    ]);
+  });
+
+  it("strips Composer thinking before yielding final Cursor adapter text", async () => {
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(connectFrame(chatResponseThinking('The user asked for OK.')));
+          controller.enqueue(connectFrame(chatResponseThinking("\n</think>\nOK")));
+          controller.enqueue(connectFrame(new TextEncoder().encode("{}"), 2));
+          controller.close();
+        }
+      }),
+      { headers: { "Content-Type": "application/connect+proto" } }
+    );
+    const events = [];
+    for await (const event of streamCursorText(response)) events.push(event);
+    expect(events).toEqual([
+      { type: "text", text: "OK" },
+      { type: "done", finalText: "OK" }
+    ]);
+  });
+
   it("extracts text deltas from Cursor interaction_update events", async () => {
     const response = new Response(
       new ReadableStream<Uint8Array>({
@@ -38,3 +79,46 @@ describe("Cursor stream adapter", () => {
     expect(events.at(-1)).toEqual({ type: "done", finalText: "Legacy text" });
   });
 });
+
+function chatResponseText(text: string): Uint8Array {
+  return protoMessage([protoField(2, protoMessage([protoField(1, text)]))]);
+}
+
+function chatResponseThinking(text: string): Uint8Array {
+  return protoMessage([protoField(2, protoMessage([protoField(25, protoMessage([protoField(1, text)]))]))]);
+}
+
+function connectFrame(payload: Uint8Array, flags = 0): Uint8Array {
+  const frame = new Uint8Array(5 + payload.length);
+  frame[0] = flags;
+  new DataView(frame.buffer).setUint32(1, payload.length, false);
+  frame.set(payload, 5);
+  return frame;
+}
+
+function protoMessage(parts: Uint8Array[]): Uint8Array {
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const output = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    output.set(part, offset);
+    offset += part.length;
+  }
+  return output;
+}
+
+function protoField(fieldNumber: number, value: string | Uint8Array): Uint8Array {
+  const data = typeof value === "string" ? new TextEncoder().encode(value) : value;
+  return protoMessage([varint((fieldNumber << 3) | 2), varint(data.length), data]);
+}
+
+function varint(value: number): Uint8Array {
+  const bytes: number[] = [];
+  let current = value;
+  while (current >= 0x80) {
+    bytes.push((current & 0x7f) | 0x80);
+    current >>>= 7;
+  }
+  bytes.push(current);
+  return new Uint8Array(bytes);
+}

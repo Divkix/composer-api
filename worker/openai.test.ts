@@ -19,7 +19,7 @@ describe("OpenAI compatibility adapter", () => {
         ],
         max_tokens: 50
       },
-      { id: "composer-latest" }
+      { id: "composer-2.5" }
     );
     expect(prepared.prompt.text).toContain("SYSTEM: Be terse.");
     expect(prepared.prompt.text).toContain("USER: What is this?");
@@ -35,7 +35,7 @@ describe("OpenAI compatibility adapter", () => {
           messages: [{ role: "user", content: "hi" }],
           tools: [{ type: "function", function: { name: "x" } }]
         },
-        { id: "composer-latest" }
+        { id: "composer-2.5" }
       )
     ).toThrow(HttpError);
   });
@@ -48,7 +48,7 @@ describe("OpenAI compatibility adapter", () => {
         input: [{ role: "user", content: [{ type: "input_text", text: "hello" }] }],
         text: { format: { type: "json_object" } }
       },
-      { id: "composer-latest" }
+      { id: "composer-2.5" }
     );
     expect(prepared.prompt.text).toContain("INSTRUCTIONS:");
     expect(prepared.prompt.text).toContain("USER: hello");

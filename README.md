@@ -1,19 +1,17 @@
 # Composer API
 
-OpenAI-compatible `chat.completions` and `responses` endpoints backed by Cursor Composer through Cursor's public Cloud Agent API.
+OpenAI-compatible `chat.completions` and `responses` endpoints backed by Cursor Composer through Cursor's internal Cursor adapter stream.
 
 Live deployment: https://composer-api.formkit.workers.dev
 
 ## What this is
 
-Cursor does not expose Composer 2.5 as a raw OpenAI-compatible model endpoint. The public SDK uses Cursor API keys against Cloud Agent endpoints:
+Cursor does not expose Composer 2.5 as a raw OpenAI-compatible model endpoint. This Worker adapts OpenAI-style requests to Cursor's internal `Cursor adapter/CursorChatEndpoint` endpoint:
 
-- `GET /v1/me`
-- `GET /v1/models`
-- `POST /v1/agents`
-- `GET /v1/agents/{agentId}/runs/{runId}/stream`
+- `POST /auth/exchange_user_api_key`
+- `POST /private-cursor-chat-endpoint`
 
-This Worker adapts basic OpenAI-style requests to short-lived Cursor agent runs.
+Each request is stateless from the caller's perspective: the Worker creates a fresh request/conversation id, sends the full prompt, disables Cursor-side tools, streams text back, and does not create a Cursor Cloud Agent.
 
 ## Supported endpoints
 
@@ -61,17 +59,18 @@ never forwarded to Cursor as a Cursor key.
 
 ## Compatibility notes
 
-This project supports text and image input, non-streaming and streaming output, JSON-output prompt constraints, and the common SDK response shapes.
+This project supports text input, non-streaming and streaming output, JSON-output prompt constraints, and the common SDK response shapes.
 
-These OpenAI features are intentionally rejected because Cursor's public agent API does not expose equivalent raw model controls:
+These OpenAI features are intentionally rejected because Cursor's Cursor adapter stream does not expose equivalent OpenAI controls:
 
 - `n` greater than `1`
 - `logprobs` and `top_logprobs`
+- image input
 - audio output
 - OpenAI function/tool calls
 - background Responses API jobs
 
-Token usage is estimated from character counts because Cursor's agent stream does not return OpenAI token accounting.
+Token usage is estimated from character counts because Cursor's stream does not return OpenAI token accounting.
 
 ## Local development
 
@@ -86,6 +85,8 @@ Create a local `.dev.vars` file:
 ```bash
 ENCRYPTION_KEY="replace-with-a-long-random-secret"
 WAITLIST_API_TOKEN="optional-standard-agents-waitlist-token"
+CURSOR_BACKEND_BASE_URL="private-cursor-backend-origin"
+CURSOR_CLIENT_VERSION="2.6.22"
 ```
 
 ## Cloudflare
@@ -117,6 +118,7 @@ wrangler secret put WAITLIST_API_TOKEN
 - Cursor SDK package: `@cursor/sdk@1.0.13`
 - Cursor SDK TypeScript docs: https://cursor.com/docs/api/sdk/typescript
 - Cursor Composer 2.5 changelog: https://cursor.com/changelog/composer-2-5
+- Reverse-engineered Cursor Cursor adapter client: https://github.com/private-reference
 - OpenAI Chat Completions reference: https://developers.openai.com/api/docs/api-reference/chat
 - OpenAI Responses reference: https://developers.openai.com/api/docs/api-reference/responses
 - OpenAI migration guide: https://developers.openai.com/api/docs/guides/migrate-to-responses

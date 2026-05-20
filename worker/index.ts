@@ -1,4 +1,4 @@
-import { collectCursorText, createCursorRun, resolveCursorModel, streamCursorText, verifyCursorApiKey } from "./cursor";
+import { collectCursorText, createCursorCompletion, resolveCursorModel, streamCursorText, verifyCursorApiKey } from "./cursor";
 import { authenticateProxyKey, completeRequestLog, createRequestLog, saveSignup } from "./db";
 import { bearerToken, errorResponse, HttpError, json, notFound, openAiError, optionsResponse, parseJsonBody, sseResponse, unauthorized, withCors } from "./http";
 import {
@@ -149,14 +149,13 @@ async function handleOpenAiRoute(
     logId ? completeRequestLog(env, logId, input) : Promise.resolve();
 
   try {
-    const run = await createCursorRun(env, deps, auth.cursorApiKey, {
+    const completion = await createCursorCompletion(env, deps, auth.cursorApiKey, {
       prompt: prepared.prompt,
-      model: prepared.cursorModel,
-      idempotencyKey: request.headers.get("idempotency-key") || undefined
+      model: prepared.cursorModel
     });
 
     if (prepared.stream) {
-      return streamOpenAiResponse(route.kind, run.stream, {
+      return streamOpenAiResponse(route.kind, completion.stream, {
         id,
         created,
         model: prepared.model,
@@ -165,26 +164,20 @@ async function handleOpenAiRoute(
         onDone: (text) =>
           finishLog({
             status: "completed",
-            completionChars: text.length,
-            cursorAgentId: run.agentId,
-            cursorRunId: run.runId
+            completionChars: text.length
           }),
         onError: (error) =>
           finishLog({
             status: "error",
-            error: error instanceof Error ? error.message : String(error),
-            cursorAgentId: run.agentId,
-            cursorRunId: run.runId
+            error: error instanceof Error ? error.message : String(error)
           })
       }, ctx);
     }
 
-    const text = await collectCursorText(run.stream);
+    const text = await collectCursorText(completion.stream);
     await finishLog({
       status: "completed",
-      completionChars: text.length,
-      cursorAgentId: run.agentId,
-      cursorRunId: run.runId
+      completionChars: text.length
     });
     if (route.kind === "chat") {
       return json(
