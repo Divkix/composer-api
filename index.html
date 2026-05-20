@@ -9,7 +9,7 @@
     <meta name="description" content="Chat completions and responses api for composer 2.5." />
   </head>
   <body>
-    <div class="bg-grid" aria-hidden="true"></div>
+    <div class="bg-texture" aria-hidden="true"></div>
 
     <main id="app">
       <section class="shell">
@@ -36,7 +36,7 @@
               <span>GitHub</span>
               <span class="star-pill" aria-label="GitHub stars">
                 <i data-lucide="star"></i>
-                <span id="star-value">—</span>
+                <span id="star-value">&mdash;</span>
               </span>
             </a>
           </nav>
@@ -53,82 +53,82 @@
           <ul class="hero-points">
             <li><i data-lucide="terminal"></i> Drop-in <code>/v1/chat/completions</code></li>
             <li><i data-lucide="git-branch"></i> Native <code>/v1/responses</code></li>
-            <li><i data-lucide="shield-check"></i> Your key, your account</li>
+            <li><i data-lucide="shield-check"></i> Bring your own Cursor key &mdash; never stored</li>
           </ul>
         </section>
 
-        <div class="grid">
-          <form id="signup-form" class="panel form-panel">
+        <section class="panel endpoints-panel" aria-labelledby="endpoints-title">
+          <div class="panel-heading">
+            <span class="panel-kicker">
+              <i data-lucide="link"></i>
+              Endpoints
+            </span>
+            <h2 id="endpoints-title">Point your OpenAI client here</h2>
+            <p>
+              Authenticate with <code>Authorization: Bearer &lt;your-cursor-api-key&gt;</code>. Your key is forwarded to
+              Cursor per request and never stored.
+            </p>
+          </div>
+          <div id="endpoint-list" class="endpoint-list"></div>
+        </section>
+
+        <section class="demo" aria-labelledby="demo-title">
+          <section class="panel demo-panel demo-chat">
             <div class="panel-heading">
-              <span class="panel-kicker">
-                <i data-lucide="plug-zap"></i>
-                Connect
+              <span class="panel-kicker demo-kicker">
+                <i data-lucide="message-square"></i>
+                Live demo
               </span>
-              <h2>Connect Cursor</h2>
-              <p>Use a Cursor user API key from Dashboard &gt; Integrations.</p>
+              <h2 id="demo-title">Chat with composer-2.5</h2>
+              <p>Runs entirely in your browser against <code>/v1/chat/completions</code>.</p>
             </div>
-
-            <label>
-              <span class="label-text">
-                <i data-lucide="user"></i>
-                Name
-              </span>
-              <input id="name" name="name" autocomplete="name" placeholder="Ada Lovelace" />
-            </label>
-
-            <label>
-              <span class="label-text">
-                <i data-lucide="mail"></i>
-                Email
-              </span>
-              <input id="email" name="email" autocomplete="email" type="email" placeholder="ada@example.com" />
-            </label>
 
             <label>
               <span class="label-text">
                 <i data-lucide="key-round"></i>
                 Cursor API key
               </span>
-              <input id="cursor-key" name="cursorKey" autocomplete="off" type="password" placeholder="key_..." required />
+              <input id="cursor-key" name="cursorKey" autocomplete="off" type="password" placeholder="key_..." />
             </label>
 
-            <label class="check-row">
-              <input id="waitlist" name="waitlist" type="checkbox" checked />
-              <span>Add me to the Standard Agents early access waitlist</span>
-            </label>
+            <div id="transcript" class="transcript" aria-live="polite">
+              <div class="transcript-empty">
+                <i data-lucide="sparkles"></i>
+                <span>Enter a key and a prompt to start.</span>
+              </div>
+            </div>
 
-            <button id="submit" class="primary" type="submit">
-              <i data-lucide="plug-zap"></i>
-              <span>Connect</span>
-            </button>
+            <form id="chat-form" class="prompt-row">
+              <textarea
+                id="prompt"
+                name="prompt"
+                rows="1"
+                placeholder="Ask composer-2.5 something..."
+              ></textarea>
+              <button id="send" class="primary send-button" type="submit" aria-label="Send">
+                <i data-lucide="send"></i>
+              </button>
+            </form>
 
             <p id="status" class="status" role="status">
               <i data-lucide="lock" class="status-icon"></i>
-              <span class="status-text">Keys are encrypted at rest. We never store them in plain text.</span>
+              <span class="status-text">Your key stays in this tab &mdash; it is never written to storage.</span>
             </p>
-          </form>
-
-          <section id="dashboard" class="panel dashboard is-empty" aria-live="polite">
-            <div class="empty-state">
-              <div class="empty-icon">
-                <i data-lucide="square-terminal"></i>
-              </div>
-              <h2>Your Composer API key lands here</h2>
-              <p>Generate Chat Completions and Responses endpoints for OpenAI-compatible clients.</p>
-              <div class="terminal-preview" aria-hidden="true">
-                <div class="terminal-bar">
-                  <span></span><span></span><span></span>
-                  <em>composer-2.5</em>
-                </div>
-                <div class="terminal-body">
-                  <div><span class="code-accent">$</span> curl /v1/chat/completions</div>
-                  <div><span class="code-muted">&gt;</span> model: <span class="code-str">composer-2.5</span></div>
-                  <div><span class="code-ok">200</span> response.created</div>
-                </div>
-              </div>
-            </div>
           </section>
-        </div>
+
+          <section class="panel demo-panel demo-request" aria-labelledby="request-title">
+            <div class="panel-heading">
+              <span class="panel-kicker request-kicker">
+                <i data-lucide="code"></i>
+                Outgoing request
+              </span>
+              <h2 id="request-title">POST /v1/chat/completions</h2>
+              <p>The exact JSON body the demo sends when you hit send.</p>
+            </div>
+
+            <pre class="req-pre"><code id="req-body"></code></pre>
+          </section>
+        </section>
 
         <footer class="site-footer">
           <span>Built by <a href="https://github.com/standardagents" target="_blank" rel="noreferrer">Standard Agents</a></span>

@@ -14,7 +14,16 @@ import {
   responseObject
 } from "./openai";
 import { submitWaitlist } from "./waitlist";
-import type { AuthenticatedAccount, Deps, Env } from "./types";
+import type { Deps, Env } from "./types";
+
+/**
+ * The two ways a `/v1/...` request can be authenticated:
+ * - `proxy`: a stored `cmp_...` key resolved against D1 (hosted-key flow).
+ * - `direct`: a Cursor API key passed straight through; nothing is stored.
+ */
+type AuthResult =
+  | { mode: "proxy"; accountId: string; cursorApiKey: string }
+  | { mode: "direct"; cursorApiKey: string };
 
 const defaultDeps: Deps = {
   fetch: (input, init) => fetch(input, init),
@@ -107,14 +116,14 @@ async function handleOpenAiRoute(
   route: OpenAiRoute
 ): Promise<Response> {
   if (route.kind === "models") {
-    const auth = await authenticate(request, env, route.accountId);
+    const auth = await authenticate(request, env, route);
     if (!auth) return unauthorized();
     if (request.method !== "GET") return notFound();
     return json(modelList());
   }
 
   if (request.method !== "POST") return notFound();
-  const auth = await authenticate(request, env, route.accountId);
+  const auth = await authenticate(request, env, route);
   if (!auth) return unauthorized();
 
   const body = await parseJsonBody<unknown>(request);
@@ -124,13 +133,20 @@ async function handleOpenAiRoute(
     route.kind === "chat" ? prepareChatRequest(body, cursorModel) : prepareResponsesRequest(body, cursorModel);
   const id = `${route.kind === "chat" ? "chatcmpl" : "resp"}_${crypto.randomUUID().replaceAll("-", "")}`;
   const created = Math.floor(deps.now().getTime() / 1000);
-  const logId = await createRequestLog(env, {
-    accountId: auth.account.id,
-    endpoint: route.kind,
-    model: prepared.model,
-    status: "running",
-    promptChars: prepared.promptChars
-  });
+
+  // Direct bearer mode never touches D1; no request logs are created.
+  const logId =
+    auth.mode === "proxy"
+      ? await createRequestLog(env, {
+          accountId: auth.accountId,
+          endpoint: route.kind,
+          model: prepared.model,
+          status: "running",
+          promptChars: prepared.promptChars
+        })
+      : null;
+  const finishLog = (input: Parameters<typeof completeRequestLog>[2]): Promise<void> =>
+    logId ? completeRequestLog(env, logId, input) : Promise.resolve();
 
   try {
     const run = await createCursorRun(env, deps, auth.cursorApiKey, {
@@ -147,14 +163,14 @@ async function handleOpenAiRoute(
         promptChars: prepared.promptChars,
         metadata: prepared.responseMetadata,
         onDone: (text) =>
-          completeRequestLog(env, logId, {
+          finishLog({
             status: "completed",
             completionChars: text.length,
             cursorAgentId: run.agentId,
             cursorRunId: run.runId
           }),
         onError: (error) =>
-          completeRequestLog(env, logId, {
+          finishLog({
             status: "error",
             error: error instanceof Error ? error.message : String(error),
             cursorAgentId: run.agentId,
@@ -164,7 +180,7 @@ async function handleOpenAiRoute(
     }
 
     const text = await collectCursorText(run.stream);
-    await completeRequestLog(env, logId, {
+    await finishLog({
       status: "completed",
       completionChars: text.length,
       cursorAgentId: run.agentId,
@@ -193,7 +209,7 @@ async function handleOpenAiRoute(
       })
     );
   } catch (error) {
-    await completeRequestLog(env, logId, {
+    await finishLog({
       status: "error",
       error: error instanceof Error ? error.message : String(error)
     }).catch(() => undefined);
@@ -260,15 +276,27 @@ function streamOpenAiResponse(
   return sseResponse(readable);
 }
 
-async function authenticate(request: Request, env: Env, pathAccountId?: string): Promise<AuthenticatedAccount | null> {
+async function authenticate(request: Request, env: Env, route: OpenAiRoute): Promise<AuthResult | null> {
   const token = bearerToken(request);
   if (!token) return null;
-  const auth = await authenticateProxyKey(env, token);
-  if (!auth) return null;
-  if (pathAccountId && pathAccountId !== auth.account.id) {
-    throw new HttpError("API key does not belong to this account endpoint", 403, "forbidden");
+
+  // A `cmp_` token is always a stored proxy key. Authenticate it against D1 and
+  // never forward it to Cursor as if it were a Cursor key; fail closed instead.
+  if (token.startsWith("cmp_")) {
+    const auth = await authenticateProxyKey(env, token);
+    if (!auth) return null;
+    if (route.accountId && route.accountId !== auth.account.id) {
+      throw new HttpError("API key does not belong to this account endpoint", 403, "forbidden");
+    }
+    return { mode: "proxy", accountId: auth.account.id, cursorApiKey: auth.cursorApiKey };
   }
-  return auth;
+
+  // Account-scoped `/u/{accountId}/v1/...` endpoints only accept stored proxy keys.
+  if (route.accountId) return null;
+
+  // Bare `/v1/...` request with a non-`cmp_` token: treat it as the caller's own
+  // Cursor API key and pass it straight through without storing anything.
+  return { mode: "direct", cursorApiKey: token };
 }
 
 interface OpenAiRoute {

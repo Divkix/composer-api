@@ -13,23 +13,26 @@ Cursor does not expose Composer 2.5 as a raw OpenAI-compatible model endpoint. T
 - `POST /v1/agents`
 - `GET /v1/agents/{agentId}/runs/{runId}/stream`
 
-This Worker verifies a user's Cursor API key, stores it encrypted in D1, mints a separate `cmp_...` proxy key, and adapts basic OpenAI-style requests to short-lived Cursor agent runs.
+This Worker adapts basic OpenAI-style requests to short-lived Cursor agent runs.
 
 ## Supported endpoints
 
 - `POST /v1/chat/completions`
 - `POST /v1/responses`
 - `GET /v1/models`
-- Per-account equivalents at `/u/{account_id}/v1/...`
 
-The per-account base URL is shown after signup and is the recommended SDK base URL.
+## Usage
+
+Point any OpenAI-compatible client at the base URL and authenticate with your own
+Cursor API key as the bearer token. The key is forwarded to Cursor per request and
+is **not stored**: no signup, no encrypted-at-rest secret, no request logs.
 
 ```ts
 import OpenAI from "openai";
 
 const client = new OpenAI({
-  apiKey: process.env.COMPOSER_API_KEY,
-  baseURL: "https://<deployment>/u/<account_id>/v1"
+  apiKey: process.env.CURSOR_API_KEY, // your Cursor user API key
+  baseURL: "https://<deployment>/v1"
 });
 
 const completion = await client.chat.completions.create({
@@ -37,6 +40,24 @@ const completion = await client.chat.completions.create({
   messages: [{ role: "user", content: "Write a TypeScript debounce." }]
 });
 ```
+
+```bash
+curl https://<deployment>/v1/chat/completions \
+  -H "Authorization: Bearer $CURSOR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"composer-2.5","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+A Cursor user API key comes from the Cursor Dashboard under Integrations.
+
+## Legacy hosted-key flow (optional)
+
+The Worker also keeps a backward-compatible hosted-key flow: `POST /api/signup`
+verifies a Cursor API key, stores it encrypted in D1, and mints a separate
+`cmp_...` proxy key usable against per-account endpoints at
+`/u/{account_id}/v1/...`. This flow is optional; the direct Bearer usage above
+is the recommended path. A `cmp_...` token is always resolved against D1 and is
+never forwarded to Cursor as a Cursor key.
 
 ## Compatibility notes
 

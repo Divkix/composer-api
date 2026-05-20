@@ -2,16 +2,17 @@ import {
   AlertTriangle,
   BookOpen,
   CheckCircle,
+  Code,
   Copy,
   Github,
   GitBranch,
   KeyRound,
+  Link,
   Lock,
-  Mail,
-  PlugZap,
-  RefreshCw,
+  MessageSquare,
+  Send,
   ShieldCheck,
-  SquareTerminal,
+  Sparkles,
   Star,
   Terminal,
   User,
@@ -20,35 +21,21 @@ import {
 } from "lucide";
 import "./styles.css";
 
-type SignupResponse = {
-  account: {
-    id: string;
-    cursorEmail?: string;
-    cursorName?: string;
-  };
-  apiKey: string;
-  endpoints: {
-    baseUrl: string;
-    chatCompletions: string;
-    responses: string;
-    accountBaseUrl: string;
-  };
-};
-
 const icons = {
   AlertTriangle,
   BookOpen,
   CheckCircle,
+  Code,
   Copy,
   Github,
   GitBranch,
   KeyRound,
+  Link,
   Lock,
-  Mail,
-  PlugZap,
-  RefreshCw,
+  MessageSquare,
+  Send,
   ShieldCheck,
-  SquareTerminal,
+  Sparkles,
   Star,
   Terminal,
   User,
@@ -65,130 +52,28 @@ for (const icon of document.querySelectorAll<HTMLElement>("[data-lucide]")) {
   if (Icon) icon.outerHTML = iconToSvg(Icon, { width: 18, height: 18, "aria-hidden": "true" });
 }
 
-const form = document.querySelector<HTMLFormElement>("#signup-form");
-const dashboard = document.querySelector<HTMLElement>("#dashboard");
-const status = document.querySelector<HTMLElement>("#status");
-const submit = document.querySelector<HTMLButtonElement>("#submit");
+/* ---- endpoints ---- */
 
-form?.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const data = new FormData(form);
-  setBusy(true);
-  setStatus("");
+const origin = window.location.origin;
+const endpoints = {
+  baseUrl: `${origin}/v1`,
+  chatCompletions: `${origin}/v1/chat/completions`,
+  responses: `${origin}/v1/responses`,
+  models: `${origin}/v1/models`
+};
 
-  try {
-    const response = await fetch("/api/signup", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: String(data.get("name") || ""),
-        email: String(data.get("email") || ""),
-        cursorApiKey: String(data.get("cursorKey") || ""),
-        joinWaitlist: data.get("waitlist") === "on"
-      })
-    });
-    const payload = (await response.json().catch(() => ({}))) as SignupResponse & { error?: { message?: string } };
-    if (!response.ok) {
-      throw new Error(payload.error?.message || "Could not connect Cursor");
-    }
-    renderDashboard(payload);
-    form.reset();
-    setStatus("Connected. Save the generated key now.", "ok");
-  } catch (error) {
-    setStatus(error instanceof Error ? error.message : "Unexpected error", "err");
-  } finally {
-    setBusy(false);
-  }
-});
-
-function setBusy(busy: boolean) {
-  if (!submit) return;
-  submit.disabled = busy;
-  const label = submit.querySelector("span");
-  if (label) label.textContent = busy ? "Connecting" : "Connect";
+const endpointList = document.querySelector<HTMLElement>("#endpoint-list");
+if (endpointList) {
+  endpointList.innerHTML = [
+    endpointRow("Base URL", endpoints.baseUrl),
+    endpointRow("Chat Completions", endpoints.chatCompletions),
+    endpointRow("Responses", endpoints.responses),
+    endpointRow("Models", endpoints.models)
+  ].join("");
+  wireCopyButtons(endpointList);
 }
 
-const DEFAULT_STATUS = "Keys are encrypted at rest. We never store them in plain text.";
-
-function setStatus(message: string, tone?: "ok" | "err") {
-  if (!status) return;
-  const isDefault = message === "";
-  const text = status.querySelector<HTMLElement>(".status-text");
-  if (text) text.textContent = isDefault ? DEFAULT_STATUS : message;
-  status.dataset.tone = isDefault ? "" : tone || "";
-  const iconSvg = status.querySelector("svg");
-  if (iconSvg) {
-    const nextIcon = tone === "err" ? AlertTriangle : tone === "ok" ? CheckCircle : Lock;
-    iconSvg.outerHTML = iconToSvg(nextIcon, {
-      width: 14,
-      height: 14,
-      class: "status-icon",
-      "aria-hidden": "true"
-    });
-  }
-}
-
-function renderDashboard(data: SignupResponse) {
-  if (!dashboard) return;
-  dashboard.classList.remove("is-empty");
-  const nodeSnippet = `import OpenAI from "openai";
-
-const client = new OpenAI({
-  apiKey: "${data.apiKey}",
-  baseURL: "${data.endpoints.accountBaseUrl}"
-});
-
-const completion = await client.chat.completions.create({
-  model: "composer-2.5",
-  messages: [{ role: "user", content: "Write a terse TypeScript debounce." }]
-});
-
-console.log(completion.choices[0].message.content);`;
-
-  const responseSnippet = `curl ${data.endpoints.responses} \\
-  -H "Authorization: Bearer ${data.apiKey}" \\
-  -H "Content-Type: application/json" \\
-  -d '{"model":"composer-2.5","input":"Summarize this endpoint."}'`;
-
-  dashboard.innerHTML = `
-    <div class="panel-heading dashboard-heading">
-      <div>
-        <h2>${escapeHtml(data.account.cursorName || data.account.cursorEmail || "Cursor account")}</h2>
-        <p>${escapeHtml(data.account.id)}</p>
-      </div>
-    </div>
-
-    <div class="secret-row">
-      <span>API key</span>
-      <code>${escapeHtml(data.apiKey)}</code>
-      <button class="icon-button" data-copy="${escapeAttr(data.apiKey)}" aria-label="Copy API key">
-        ${iconToSvg(Copy, { width: 17, height: 17, "aria-hidden": "true" })}
-      </button>
-    </div>
-
-    <div class="endpoint-list">
-      ${endpointRow("Base URL", data.endpoints.accountBaseUrl)}
-      ${endpointRow("Chat Completions", data.endpoints.chatCompletions)}
-      ${endpointRow("Responses", data.endpoints.responses)}
-    </div>
-
-    <div class="snippet-grid">
-      <pre><code>${escapeHtml(nodeSnippet)}</code></pre>
-      <pre><code>${escapeHtml(responseSnippet)}</code></pre>
-    </div>
-  `;
-
-  dashboard.querySelectorAll<HTMLButtonElement>("[data-copy]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const value = button.dataset.copy || "";
-      await navigator.clipboard.writeText(value);
-      button.classList.add("copied");
-      window.setTimeout(() => button.classList.remove("copied"), 900);
-    });
-  });
-}
-
-function endpointRow(label: string, value: string) {
+function endpointRow(label: string, value: string): string {
   return `
     <div class="endpoint-row">
       <span>${escapeHtml(label)}</span>
@@ -199,6 +84,223 @@ function endpointRow(label: string, value: string) {
     </div>
   `;
 }
+
+function wireCopyButtons(root: HTMLElement) {
+  root.querySelectorAll<HTMLButtonElement>("[data-copy]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(button.dataset.copy || "");
+        button.classList.add("copied");
+        window.setTimeout(() => button.classList.remove("copied"), 900);
+      } catch {
+        /* clipboard unavailable - ignore */
+      }
+    });
+  });
+}
+
+/* ---- demo ---- */
+
+type ChatMessage = { role: "user" | "assistant"; content: string };
+
+// The Cursor key lives only in runtime state - never localStorage/sessionStorage.
+const messages: ChatMessage[] = [];
+
+const keyInput = document.querySelector<HTMLInputElement>("#cursor-key");
+const promptInput = document.querySelector<HTMLTextAreaElement>("#prompt");
+const chatForm = document.querySelector<HTMLFormElement>("#chat-form");
+const sendButton = document.querySelector<HTMLButtonElement>("#send");
+const transcript = document.querySelector<HTMLElement>("#transcript");
+const status = document.querySelector<HTMLElement>("#status");
+
+const reqBody = document.querySelector<HTMLElement>("#req-body");
+
+let busy = false;
+
+function requestBody(extraUserMessage?: string): Record<string, unknown> {
+  const outgoing = [...messages];
+  if (extraUserMessage) outgoing.push({ role: "user", content: extraUserMessage });
+  return {
+    model: "composer-2.5",
+    messages: outgoing,
+    stream: true
+  };
+}
+
+function renderRequestPreview() {
+  const draft = promptInput?.value.trim() || "";
+  if (reqBody) reqBody.textContent = JSON.stringify(requestBody(draft || undefined), null, 2);
+}
+
+function renderTranscript(streaming?: HTMLElement) {
+  if (!transcript) return;
+  if (!messages.length && !streaming) {
+    transcript.innerHTML = `
+      <div class="transcript-empty">
+        ${iconToSvg(Sparkles, { width: 22, height: 22, "aria-hidden": "true" })}
+        <span>Enter a key and a prompt to start.</span>
+      </div>`;
+    return;
+  }
+  transcript.innerHTML = "";
+  for (const message of messages) transcript.appendChild(messageNode(message.role, message.content));
+  if (streaming) transcript.appendChild(streaming);
+  transcript.scrollTop = transcript.scrollHeight;
+}
+
+function messageNode(role: "user" | "assistant", content: string): HTMLElement {
+  const node = document.createElement("div");
+  node.className = `msg msg-${role}`;
+  const icon = role === "user" ? User : Sparkles;
+  node.innerHTML = `
+    <span class="msg-avatar">${iconToSvg(icon, { width: 15, height: 15, "aria-hidden": "true" })}</span>
+    <div class="msg-body"></div>`;
+  const body = node.querySelector<HTMLElement>(".msg-body");
+  if (body) body.textContent = content;
+  return node;
+}
+
+function setStatus(message: string, tone?: "ok" | "err") {
+  if (!status) return;
+  const text = status.querySelector<HTMLElement>(".status-text");
+  const isDefault = message === "";
+  if (text) {
+    text.textContent = isDefault
+      ? "Your key stays in this tab - it is never written to storage."
+      : message;
+  }
+  status.dataset.tone = isDefault ? "" : tone || "";
+  const iconSvg = status.querySelector("svg");
+  if (iconSvg) {
+    const nextIcon = tone === "err" ? AlertTriangle : tone === "ok" ? CheckCircle : Lock;
+    iconSvg.outerHTML = iconToSvg(nextIcon, { width: 14, height: 14, class: "status-icon", "aria-hidden": "true" });
+  }
+}
+
+function setBusy(value: boolean) {
+  busy = value;
+  if (sendButton) sendButton.disabled = value;
+  if (promptInput) promptInput.disabled = value;
+}
+
+promptInput?.addEventListener("input", () => {
+  renderRequestPreview();
+  autoGrow();
+});
+
+function autoGrow() {
+  if (!promptInput) return;
+  promptInput.style.height = "auto";
+  promptInput.style.height = `${Math.min(promptInput.scrollHeight, 160)}px`;
+}
+
+promptInput?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    chatForm?.requestSubmit();
+  }
+});
+
+chatForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (busy) return;
+
+  const key = keyInput?.value.trim() || "";
+  const prompt = promptInput?.value.trim() || "";
+  if (!key) {
+    setStatus("Enter your Cursor API key first.", "err");
+    keyInput?.focus();
+    return;
+  }
+  if (!prompt) {
+    setStatus("Type a prompt to send.", "err");
+    return;
+  }
+
+  messages.push({ role: "user", content: prompt });
+  if (promptInput) {
+    promptInput.value = "";
+    autoGrow();
+  }
+  setBusy(true);
+  setStatus("Streaming from composer-2.5...");
+
+  const pending = messageNode("assistant", "");
+  const pendingBody = pending.querySelector<HTMLElement>(".msg-body");
+  pending.classList.add("is-streaming");
+  renderTranscript(pending);
+  renderRequestPreview();
+
+  let answer = "";
+  try {
+    const response = await fetch(endpoints.chatCompletions, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(requestBody())
+    });
+
+    if (!response.ok || !response.body) {
+      const payload = (await response.json().catch(() => ({}))) as { error?: { message?: string } };
+      throw new Error(payload.error?.message || `Request failed with status ${response.status}`);
+    }
+
+    for await (const delta of readChatStream(response.body)) {
+      answer += delta;
+      if (pendingBody) pendingBody.textContent = answer;
+      if (transcript) transcript.scrollTop = transcript.scrollHeight;
+    }
+
+    if (!answer.trim()) throw new Error("composer-2.5 returned an empty response.");
+    messages.push({ role: "assistant", content: answer });
+    renderTranscript();
+    setStatus("");
+  } catch (error) {
+    if (answer.trim()) messages.push({ role: "assistant", content: answer });
+    renderTranscript();
+    setStatus(error instanceof Error ? error.message : "Unexpected error", "err");
+  } finally {
+    setBusy(false);
+    renderRequestPreview();
+    promptInput?.focus();
+  }
+});
+
+async function* readChatStream(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary !== -1) {
+      const rawEvent = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      boundary = buffer.indexOf("\n\n");
+      for (const line of rawEvent.split("\n")) {
+        if (!line.startsWith("data:")) continue;
+        const data = line.slice(5).trim();
+        if (!data || data === "[DONE]") continue;
+        try {
+          const chunk = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> };
+          const content = chunk.choices?.[0]?.delta?.content;
+          if (content) yield content;
+        } catch {
+          /* skip malformed chunk */
+        }
+      }
+    }
+  }
+}
+
+renderRequestPreview();
+renderTranscript();
+
+/* ---- shared helpers ---- */
 
 function escapeHtml(value: string) {
   return value
