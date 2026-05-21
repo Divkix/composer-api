@@ -344,14 +344,18 @@ describe("Worker", () => {
       deps
     );
     expect(withAuth.status).toBe(200);
-    await expect(withAuth.json()).resolves.toMatchObject({
+    const body = (await withAuth.json()) as { object: string; data: Array<{ id: string }> };
+    expect(body).toMatchObject({
       object: "list",
       data: expect.arrayContaining([
         expect.objectContaining({ id: "composer-2.5" }),
         expect.objectContaining({ id: "composer-2.5-fast" }),
+        expect.objectContaining({ id: "gpt-5.3-codex" }),
+        expect.objectContaining({ id: "gemini-3.1-pro" }),
         expect.objectContaining({ id: "default" })
       ])
     });
+    expect(body.data.map((model) => model.id)).not.toContain("gpt-5.5");
   });
 
   it("rejects an unknown cmp_ token without forwarding it to Cursor", async () => {

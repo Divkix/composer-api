@@ -358,6 +358,11 @@ code {
   color: var(--cyan);
 }
 
+.faq-item code {
+  color: var(--yellow);
+  font-size: 0.88em;
+}
+
 /* ---- docs ---- */
 .docs {
   margin-top: 46px;

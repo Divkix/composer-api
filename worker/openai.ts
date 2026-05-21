@@ -295,10 +295,25 @@ export function modelList(): Record<string, unknown> {
   return {
     object: "list",
     data: [
+      modelItem("default", "Auto"),
       modelItem("composer-2.5", "Cursor Composer 2.5"),
       modelItem("composer-2.5-fast", "Cursor Composer 2.5 Fast"),
+      modelItem("composer-2", "Cursor Composer 2"),
       modelItem("composer-latest", "Cursor Composer latest alias"),
-      modelItem("default", "Cursor default model alias")
+      modelItem("gpt-5.3-codex", "Codex 5.3"),
+      modelItem("gpt-5.2-codex", "Codex 5.2"),
+      modelItem("gpt-5.1-codex-max", "Codex 5.1 Max"),
+      modelItem("gpt-5.1-codex-mini", "Codex 5.1 Mini"),
+      modelItem("gpt-5.2", "GPT-5.2"),
+      modelItem("gpt-5.1", "GPT-5.1"),
+      modelItem("gpt-5-mini", "GPT-5 Mini"),
+      modelItem("gemini-3.1-pro", "Gemini 3.1 Pro"),
+      modelItem("gemini-3.5-flash", "Gemini 3.5 Flash"),
+      modelItem("gemini-3-flash", "Gemini 3 Flash"),
+      modelItem("gemini-2.5-flash", "Gemini 2.5 Flash"),
+      modelItem("grok-build-0.1", "Grok Build 0.1"),
+      modelItem("grok-4.3", "Grok 4.3"),
+      modelItem("kimi-k2.5", "Kimi K2.5")
     ]
   };
 }
