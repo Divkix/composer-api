@@ -118,6 +118,28 @@ describe("Cursor stream adapter", () => {
     ]);
   });
 
+  it("strips Composer final markers split across normal text frames", async () => {
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(connectFrame(chatResponseText("<")));
+          controller.enqueue(connectFrame(chatResponseText("｜fina")));
+          controller.enqueue(connectFrame(chatResponseText("l｜")));
+          controller.enqueue(connectFrame(chatResponseText(">\n\nVisible answer")));
+          controller.enqueue(connectFrame(new TextEncoder().encode("{}"), 2));
+          controller.close();
+        }
+      }),
+      { headers: { "Content-Type": "application/connect+proto" } }
+    );
+    const events = [];
+    for await (const event of streamCursorText(response)) events.push(event);
+    expect(events).toEqual([
+      { type: "text", text: "Visible answer" },
+      { type: "done", finalText: "Visible answer" }
+    ]);
+  });
+
   it("surfaces detailed Cursor end-stream errors", async () => {
     const response = new Response(
       new ReadableStream<Uint8Array>({

@@ -95,6 +95,15 @@ export async function* streamCursorText(response: Response): AsyncGenerator<Curs
 
   let text = "";
   const thinking = new ThinkingTextExtractor();
+  const output = new ComposerOutputFilter();
+  const emit = function* (value: string): Generator<string> {
+    for (const delta of output.push(value)) {
+      if (delta) {
+        text += delta;
+        yield delta;
+      }
+    }
+  };
   for await (const frame of parseConnectProtoFrames(response.body)) {
     const event = decodeCursorChatFrame(frame);
     if (event.type === "error") throw new HttpError(event.message, 502, "cursor_stream_error");
@@ -102,25 +111,25 @@ export async function* streamCursorText(response: Response): AsyncGenerator<Curs
       throw new HttpError("Cursor requested a tool call, but this OpenAI-compatible proxy runs with tools disabled.", 502, "cursor_tool_call");
     }
     if (event.type === "text" && event.text) {
-      const delta = stripComposerControlTokens(event.text);
-      if (delta) {
-        text += delta;
+      for (const delta of emit(event.text)) {
         yield { type: "text", text: delta };
       }
     }
     if (event.type === "thinking" && event.text) {
       for (const delta of thinking.push(event.text)) {
-        const cleaned = stripComposerControlTokens(delta);
-        if (cleaned) {
-          text += cleaned;
-          yield { type: "text", text: cleaned };
+        for (const visible of emit(delta)) {
+          yield { type: "text", text: visible };
         }
       }
     }
   }
   const flushed = thinking.flush();
   if (flushed) {
-    const delta = stripComposerControlTokens(flushed);
+    for (const delta of emit(flushed)) {
+      yield { type: "text", text: delta };
+    }
+  }
+  for (const delta of output.flush()) {
     if (delta) {
       text += delta;
       yield { type: "text", text: delta };
@@ -281,11 +290,16 @@ async function cursorInternalRaw(
   const response = await deps.fetch(url, { ...init, headers });
   if (!response.ok) {
     const text = await response.text().catch(() => "");
+    const parsed = parseCursorError(text);
     const message =
       response.status === 401
         ? "Invalid Cursor API key"
-        : parseCursorError(text) || `Cursor internal API request failed with status ${response.status}`;
-    const status = response.status === 401 ? 401 : response.status === 429 ? 429 : response.status >= 500 ? 502 : 400;
+        : parsed ||
+          (response.status === 464
+            ? "Cursor rejected the internal Cursor adapter request. The proxy request is valid, but Cursor refused this account/session."
+            : `Cursor internal API request failed with status ${response.status}`);
+    const status =
+      response.status === 401 ? 401 : response.status === 429 ? 429 : response.status >= 500 || response.status === 464 ? 502 : 400;
     throw new HttpError(message, status, response.status === 401 ? "cursor_unauthorized" : "cursor_api_error");
   }
   return response;
@@ -595,6 +609,46 @@ class ThinkingTextExtractor {
   private findFinalMarker(): { index: number; length: number } | null {
     return findComposerControlToken(this.buffer);
   }
+}
+
+class ComposerOutputFilter {
+  private buffer = "";
+
+  push(delta: string): string[] {
+    this.buffer += delta;
+    const marker = findComposerControlToken(this.buffer);
+    if (marker) {
+      const after = this.buffer.slice(marker.index + marker.length).replace(/^\s+/, "");
+      this.buffer = "";
+      return after ? [after] : [];
+    }
+
+    const keep = controlTokenPrefixLength(this.buffer);
+    if (keep === this.buffer.length) return [];
+    const visible = this.buffer.slice(0, this.buffer.length - keep);
+    this.buffer = this.buffer.slice(this.buffer.length - keep);
+    return visible ? [visible] : [];
+  }
+
+  flush(): string[] {
+    const marker = findComposerControlToken(this.buffer);
+    const visible = marker
+      ? this.buffer.slice(marker.index + marker.length).replace(/^\s+/, "")
+      : this.buffer;
+    this.buffer = "";
+    return visible ? [visible] : [];
+  }
+}
+
+function controlTokenPrefixLength(value: string): number {
+  const candidates = ["</think>", "<|final|>", "<｜final｜>", "< | final | >"];
+  let keep = 0;
+  const max = Math.min(value.length, Math.max(...candidates.map((candidate) => candidate.length)));
+  for (let length = 1; length <= max; length += 1) {
+    const suffix = value.slice(value.length - length);
+    if (candidates.some((candidate) => candidate.startsWith(suffix))) keep = length;
+  }
+  return keep;
 }
 
 function protoMessage(parts: Uint8Array[]): Uint8Array {

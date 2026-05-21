@@ -17,4 +17,33 @@ describe("markdown renderer", () => {
     expect(result.html).toContain("&lt;script&gt;");
     expect(result.html).not.toContain("<script>");
   });
+
+  it("renders tabbed code samples and relative links", () => {
+    const result = renderMarkdown(
+      [
+        "Open [Cursor Chat](/chat).",
+        "",
+        "::: code-tabs",
+        "",
+        "```ts",
+        'const value = "ok";',
+        "```",
+        "",
+        "```python",
+        'print("ok")',
+        "```",
+        "",
+        ":::"
+      ].join("\n"),
+      { copyButtons: true }
+    );
+
+    expect(result.html).toContain('<a href="/chat">Cursor Chat</a>');
+    expect(result.html).toContain("data-code-tabs");
+    expect(result.html).toContain('data-code-tab="0"');
+    expect(result.html).toContain('data-code-panel="1" hidden');
+    expect(result.html).toContain("TypeScript");
+    expect(result.html).toContain("Python");
+    expect(result.html).toContain('<span class="tok-kw">print</span>');
+  });
 });

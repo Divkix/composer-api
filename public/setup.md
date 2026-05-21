@@ -1,4 +1,6 @@
-# use standard SDKs with your Cursor Subscription
+# How to use it
+
+Cursor does not expose Composer through a standard API. This proxy accepts familiar OpenAI-style requests and transforms the formats into something Cursor can use.
 
 Use the OpenAI SDK, Vercel AI SDK, or any client that can set a custom base URL. Authenticate every request with your Cursor API key as a Bearer token.
 
@@ -29,6 +31,8 @@ for await (const delta of result.textStream) {
 
 ## OpenAI SDK
 
+::: code-tabs
+
 ```ts
 import OpenAI from "openai";
 
@@ -51,6 +55,32 @@ const response = await client.responses.create({
 
 console.log(response.output_text);
 ```
+
+```python
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    api_key=os.environ["CURSOR_API_KEY"],
+    base_url="{{BASE_URL}}",
+)
+
+chat = client.chat.completions.create(
+    model="composer-2.5",
+    messages=[{"role": "user", "content": "Explain async iterators."}],
+)
+
+print(chat.choices[0].message.content)
+
+response = client.responses.create(
+    model="composer-2.5",
+    input="Explain async iterators.",
+)
+
+print(response.output_text)
+```
+
+:::
 
 ## cURL
 
@@ -84,3 +114,7 @@ Available endpoints:
 - `POST {{BASE_URL}}/chat/completions`
 - `POST {{BASE_URL}}/responses`
 - `GET {{BASE_URL}}/models`
+
+## Try it in Cursor Chat
+
+Open [Cursor Chat](/chat) to try an example app that uses the missing API to create a ChatGPT-style experience with Cursor models. It sends the same `/v1/chat/completions` requests shown above and displays the request JSON beside the conversation.

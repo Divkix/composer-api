@@ -18,13 +18,13 @@ async function route(): Promise<void> {
   if (isChatRoute()) {
     landing.hidden = true;
     chatRoot.hidden = false;
-    document.title = "Cursor Chat — The missing Composer 2.5 API";
+    document.title = "Cursor Chat — The missing Cursor API";
     const { mountChat } = await import("./chat");
     mountChat(chatRoot);
   } else {
     chatRoot.hidden = true;
     landing.hidden = false;
-    document.title = "The missing Composer 2.5 API";
+    document.title = "The missing Cursor API";
     mountLanding();
   }
 }
@@ -73,15 +73,76 @@ async function renderDocs(): Promise<void> {
     const markdown = (await response.text()).replaceAll("{{BASE_URL}}", baseUrl);
     const rendered = renderMarkdown(markdown, { copyButtons: true });
     content.innerHTML = rendered.html;
+    trimDocsPreamble(content);
+    wrapDocsSections(content);
     nav.innerHTML = rendered.headings
       .filter((heading) => heading.level === 2)
       .map((heading) => `<a href="#${heading.id}">${heading.text}</a>`)
       .join("");
     wireCopyButtons(content);
+    wireCodeTabs(content);
   } catch {
     content.innerHTML = "<p>Setup docs could not be loaded. Open the Markdown version directly.</p>";
     nav.innerHTML = "";
   }
+}
+
+function trimDocsPreamble(content: HTMLElement): void {
+  for (const node of Array.from(content.childNodes)) {
+    if (node instanceof HTMLHeadingElement && node.tagName === "H2") return;
+    node.remove();
+  }
+}
+
+function wireCodeTabs(root: HTMLElement): void {
+  for (const group of root.querySelectorAll<HTMLElement>("[data-code-tabs]")) {
+    const tabs = [...group.querySelectorAll<HTMLButtonElement>("[data-code-tab]")];
+    const panels = [...group.querySelectorAll<HTMLElement>("[data-code-panel]")];
+    for (const tab of tabs) {
+      tab.addEventListener("click", () => {
+        const index = tab.dataset.codeTab || "0";
+        for (const item of tabs) {
+          const active = item === tab;
+          item.classList.toggle("is-active", active);
+          item.setAttribute("aria-selected", active ? "true" : "false");
+        }
+        for (const panel of panels) {
+          const active = panel.dataset.codePanel === index;
+          panel.hidden = !active;
+          panel.classList.toggle("is-active", active);
+        }
+      });
+    }
+  }
+}
+
+function wrapDocsSections(content: HTMLElement): void {
+  const nodes = Array.from(content.childNodes);
+  let section: HTMLElement | null = null;
+  for (const node of nodes) {
+    if (node instanceof HTMLHeadingElement && node.tagName === "H2") {
+      section = document.createElement("section");
+      section.className = "doc-section";
+      content.insertBefore(section, node);
+      const logo = docsLogoForHeading(node.textContent?.trim() || "");
+      if (logo) {
+        section.dataset.brand = logo.key;
+        const lockup = document.createElement("span");
+        lockup.className = `doc-brand-lockup doc-brand-${logo.key}`;
+        lockup.innerHTML = `<img src="${logo.src}" alt="${logo.alt}" loading="lazy" />`;
+        section.appendChild(lockup);
+      }
+      section.appendChild(node);
+      continue;
+    }
+    if (section) section.appendChild(node);
+  }
+}
+
+function docsLogoForHeading(text: string): { key: string; src: string; alt: string } | null {
+  if (text === "Vercel AI SDK") return { key: "vercel", src: "/vercel-logotype.svg", alt: "Vercel" };
+  if (text === "OpenAI SDK") return { key: "openai", src: "/openai-logo.svg", alt: "OpenAI" };
+  return null;
 }
 
 /* ----------------------------------------------------- GitHub star count */

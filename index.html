@@ -6,14 +6,14 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="theme-color" content="#1c1d18" />
 
-    <title>The missing Composer 2.5 API</title>
+    <title>The missing Cursor API</title>
     <meta
       name="description"
       content="Chat completions and responses api for composer 2.5."
     />
 
     <meta property="og:type" content="website" />
-    <meta property="og:title" content="The missing Composer 2.5 API" />
+    <meta property="og:title" content="The missing Cursor API" />
     <meta
       property="og:description"
       content="Chat completions and responses api for composer 2.5."
@@ -23,7 +23,7 @@
     <meta property="og:image:height" content="630" />
 
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="The missing Composer 2.5 API" />
+    <meta name="twitter:title" content="The missing Cursor API" />
     <meta
       name="twitter:description"
       content="Chat completions and responses api for composer 2.5."
@@ -67,12 +67,14 @@
         </header>
 
         <section class="hero" aria-labelledby="hero-title">
-          <img class="hero-mark" src="/cursor-logo.svg" alt="Cursor" width="48" height="48" />
           <p class="hero-badge">
             <i data-lucide="plug-zap"></i>
             OpenAI-SDK compatible
           </p>
-          <h1 id="hero-title">The missing Composer 2.5 API</h1>
+          <h1 id="hero-title">
+            <img class="hero-title-logo" src="/cursor-logo.svg" alt="Cursor" width="72" height="72" />
+            The missing Cursor API
+          </h1>
           <p class="hero-lede">Chat completions and responses api for composer 2.5</p>
 
           <div class="hero-actions">
@@ -88,16 +90,17 @@
         </section>
 
         <section id="docs" class="docs" aria-labelledby="docs-title">
-          <header class="docs-head">
-            <div>
-              <span class="kicker"><i data-lucide="terminal"></i> Setup</span>
-              <h2 id="docs-title">use standard SDKs with your Cursor Subscription</h2>
-              <p>Plain documentation generated from Markdown.</p>
-            </div>
+          <div class="docs-topline">
             <a class="docs-markdown-link" href="/setup.md" target="_blank" rel="noreferrer">
               <i data-lucide="code-2"></i>
               View as markdown
             </a>
+          </div>
+          <header class="docs-head">
+            <span class="kicker"><i data-lucide="terminal"></i> Setup</span>
+            <h2 id="docs-title">How to use it</h2>
+            <p>Cursor does not expose Composer through a standard API. This proxy accepts familiar OpenAI-style requests and transforms the formats into something Cursor can use.</p>
+            <p>Use the OpenAI SDK, Vercel AI SDK, or any client that can set a custom base URL. Authenticate every request with your Cursor API key as a Bearer token.</p>
           </header>
 
           <div class="docs-layout">

@@ -42,6 +42,7 @@ interface PersistedState {
 const MODELS = [
   { id: "composer-2.5", label: "composer-2.5" },
   { id: "composer-2.5-fast", label: "composer-2.5-fast" },
+  { id: "composer-latest", label: "composer-latest" },
   { id: "default", label: "default" }
 ];
 

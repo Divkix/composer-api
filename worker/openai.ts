@@ -297,7 +297,8 @@ export function modelList(): Record<string, unknown> {
     data: [
       modelItem("composer-2.5", "Cursor Composer 2.5"),
       modelItem("composer-2.5-fast", "Cursor Composer 2.5 Fast"),
-      modelItem("composer-latest", "Cursor Composer latest alias")
+      modelItem("composer-latest", "Cursor Composer latest alias"),
+      modelItem("default", "Cursor default model alias")
     ]
   };
 }
