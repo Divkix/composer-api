@@ -1852,20 +1852,20 @@ code {
     width: calc(100% - 20px);
     align-items: center;
     gap: 6px;
-    overflow-x: hidden;
+    min-height: var(--sa-bar-offset);
+    padding: 5px 0;
+    overflow: hidden;
   }
 
   .sa-bar-pitch {
-    flex: 0 1 78px;
-    min-width: 78px;
-    gap: 5px;
+    flex: 0 0 auto;
+    width: auto;
+    min-width: 0;
+    gap: 0;
   }
 
   .sa-bar-pitch p {
-    display: block;
-    max-width: 58px;
-    font-size: 0.61rem;
-    line-height: 1.1;
+    display: none;
   }
 
   .sa-bar-form {
