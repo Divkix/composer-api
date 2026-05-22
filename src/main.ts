@@ -17,13 +17,13 @@ async function route(): Promise<void> {
   if (isChatRoute()) {
     landing.hidden = true;
     chatRoot.hidden = false;
-    document.title = "Cursor Chat — The unofficial Cursor API";
+    document.title = "Cursor Chat — The missing Cursor API";
     const { mountChat } = await import("./chat");
     mountChat(chatRoot);
   } else {
     chatRoot.hidden = true;
     landing.hidden = false;
-    document.title = "The unofficial Cursor API";
+    document.title = "The missing Cursor API";
     mountLanding();
   }
 }
