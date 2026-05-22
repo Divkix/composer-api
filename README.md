@@ -90,7 +90,7 @@ OpenCode uses these endpoints:
 - `POST /opencode/v1/chat/completions`
 
 Configure the provider with `@ai-sdk/openai-compatible` and select
-`cursor/composer-2.5`, displayed as **Cursor 2.5**.
+`cursor/composer-2.5`, displayed as **Composer 2.5**.
 
 ## Local development
 

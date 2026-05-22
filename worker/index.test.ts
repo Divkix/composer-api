@@ -377,7 +377,7 @@ describe("Worker", () => {
     const standardBody = (await standard.json()) as { data: Array<{ id: string; name: string; cost?: { input: number; output: number } }> };
     const opencodeBody = (await opencode.json()) as { data: Array<{ id: string; name: string; cost?: { input: number; output: number } }> };
     expect(standardBody.data.find((model) => model.id === "composer-2.5")?.name).toBe("Cursor Composer 2.5");
-    expect(opencodeBody.data.find((model) => model.id === "composer-2.5")?.name).toBe("Cursor 2.5");
+    expect(opencodeBody.data.find((model) => model.id === "composer-2.5")?.name).toBe("Composer 2.5");
     expect(opencodeBody.data.find((model) => model.id === "composer-2.5")?.cost).toEqual({ input: 0.5, output: 2.5 });
   });
 

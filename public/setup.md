@@ -121,7 +121,7 @@ Add a custom provider to `~/.config/opencode/opencode.json`:
       },
       "models": {
         "composer-2.5": {
-          "name": "Cursor 2.5",
+          "name": "Composer 2.5",
           "cost": {
             "input": 0.5,
             "output": 2.5
@@ -144,7 +144,7 @@ export CURSOR_API_KEY="crsr_..."
 opencode
 ```
 
-If you do not set `model`, run `/models` inside OpenCode and choose `cursor/composer-2.5`, displayed as **Cursor 2.5**.
+If you do not set `model`, run `/models` inside OpenCode and choose `cursor/composer-2.5`, displayed as **Composer 2.5**.
 
 ## cURL
 

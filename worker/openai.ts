@@ -427,7 +427,7 @@ export function modelList(options: { opencode?: boolean } = {}): Record<string, 
     object: "list",
     data: [
       modelItem("default", "Auto"),
-      modelItem("composer-2.5", options.opencode ? "Cursor 2.5" : "Cursor Composer 2.5"),
+      modelItem("composer-2.5", options.opencode ? "Composer 2.5" : "Cursor Composer 2.5"),
       modelItem("composer-2.5-fast", "Cursor Composer 2.5 Fast"),
       modelItem("composer-2", "Cursor Composer 2"),
       modelItem("composer-latest", "Cursor Composer latest alias"),
