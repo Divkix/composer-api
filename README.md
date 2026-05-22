@@ -71,35 +71,25 @@ These OpenAI features are intentionally rejected because Cursor does not expose 
 
 Token usage is estimated from character counts because Cursor's stream does not return OpenAI token accounting.
 
-## OpenCode bridge
+## OpenCode
 
-OpenCode works best against the local SDK bridge, which exposes a stateful
-Responses API and lets the Cursor SDK run its local agent tools in the target
-project directory.
+OpenCode can use the hosted proxy as a normal selectable provider. Configure a
+provider with `@ai-sdk/openai-compatible`, set the base URL to the proxy, and
+select `cursor/composer-2.5`.
 
-Local bridge base URL:
+Base URL:
 
 ```txt
-http://127.0.0.1:8791/v1
+https://cursor-api.standardagents.ai/v1
 ```
 
-Local bridge endpoints:
+OpenCode uses these proxy endpoints:
 
-- `POST /v1/responses`
-- `GET /v1/responses/{response_id}`
 - `GET /v1/models`
-- `GET /v1/health`
+- `POST /v1/chat/completions`
 
-```bash
-export CURSOR_API_KEY="crsr_..."
-CURSOR_SDK_PROXY_CWD="/path/to/project" npm run sdk:responses
-```
-
-Configure OpenCode with `@ai-sdk/openai` and `http://127.0.0.1:8791/v1` as the
-base URL, then use `cursor-sdk/composer-2.5`.
-
-On Justin's local machine, the `opencode-cursor` launcher starts that bridge for
-the current directory and opens OpenCode with the correct model.
+The local machine config in `~/.config/opencode/opencode.json` uses provider id
+`cursor`, model id `composer-2.5`, and the Cursor credential from OpenCode auth.
 
 ## Local development
 

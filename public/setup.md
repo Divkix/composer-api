@@ -90,47 +90,31 @@ print(response.output_text)
 
 ## OpenCode
 
-OpenCode works best through the local Responses bridge in this repo. The bridge talks to OpenCode as a stateful `/v1/responses` provider, then lets the Cursor SDK run a local agent against your project folder.
+OpenCode supports custom OpenAI-compatible providers through `@ai-sdk/openai-compatible`, so you can point it at this proxy and use your Cursor API key as the provider key.
 
-The local bridge listens on:
+Use the same hosted proxy base URL as the SDK examples:
 
 ```txt
-http://127.0.0.1:8791/v1
+{{BASE_URL}}
 ```
 
-It exposes these endpoints:
+OpenCode will use these proxy endpoints:
 
-- `POST /v1/responses`
-- `GET /v1/responses/{response_id}`
 - `GET /v1/models`
-- `GET /v1/health`
-
-Start the bridge from this repo, pointing it at the project you want OpenCode to edit:
-
-```bash
-export CURSOR_API_KEY="crsr_..."
-CURSOR_SDK_PROXY_CWD="/path/to/your/project" npm run sdk:responses
-```
-
-On Justin's local machine, `opencode-cursor` does that setup automatically for the current directory and then launches OpenCode:
-
-```bash
-cd /path/to/your/project
-opencode-cursor
-```
+- `POST /v1/chat/completions`
 
 Add a custom provider to `~/.config/opencode/opencode.json`:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "cursor-sdk/composer-2.5",
+  "model": "cursor/composer-2.5",
   "provider": {
-    "cursor-sdk": {
-      "npm": "@ai-sdk/openai",
-      "name": "Cursor SDK",
+    "cursor": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Cursor via Standard Agents",
       "options": {
-        "baseURL": "http://127.0.0.1:8791/v1",
+        "baseURL": "{{BASE_URL}}",
         "apiKey": "{env:CURSOR_API_KEY}"
       },
       "models": {
@@ -154,7 +138,7 @@ export CURSOR_API_KEY="crsr_..."
 opencode
 ```
 
-If you do not set `model`, run `/models` inside OpenCode and choose `cursor-sdk/composer-2.5`.
+If you do not set `model`, run `/models` inside OpenCode and choose `cursor/composer-2.5`, displayed as **Composer 2.5**.
 
 ## cURL
 
