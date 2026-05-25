@@ -154,7 +154,7 @@ Add a custom provider to `~/.config/opencode/opencode.json`:
   "provider": {
     "cursorsdk": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "Cursor SDK Bridge",
+      "name": "API for Cursor",
       "options": {
         "baseURL": "https://cursor-api.standardagents.ai/opencodev2/v1",
         "apiKey": "{env:CURSOR_API_KEY}"
