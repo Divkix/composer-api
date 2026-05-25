@@ -51,7 +51,7 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
                         throw CursorAPIError.invalidConfiguration("This \(CursorAPIBrand.displayName) build is missing its bundled internal Composer routing. Repackage the app with routing defaults or inspect Settings > Advanced Routing Overrides.")
                     }
 
-                    let apiKey = cursorAPIKey(from: authorization, settings: settings)
+                    let apiKey = Self.resolvedCursorAPIKey(from: authorization, settings: settings)
                     guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                         throw CursorAPIError.unauthorized
                     }
@@ -164,21 +164,21 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
         return base.appending(path: normalized)
     }
 
-    private func bearerToken(_ authorization: String?) -> String? {
-        guard let authorization else { return nil }
-        let pieces = authorization.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
-        guard pieces.count == 2, pieces[0].lowercased() == "bearer" else { return nil }
-        return String(pieces[1])
-    }
-
-    private func cursorAPIKey(from authorization: String?, settings: CursorAPISettings) -> String {
+    static func resolvedCursorAPIKey(from authorization: String?, settings: CursorAPISettings) -> String {
         guard let token = bearerToken(authorization), !isLocalPlaceholderToken(token) else {
             return settings.cursorAPIKey
         }
         return token
     }
 
-    private func isLocalPlaceholderToken(_ token: String) -> Bool {
+    private static func bearerToken(_ authorization: String?) -> String? {
+        guard let authorization else { return nil }
+        let pieces = authorization.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+        guard pieces.count == 2, pieces[0].lowercased() == "bearer" else { return nil }
+        return String(pieces[1])
+    }
+
+    private static func isLocalPlaceholderToken(_ token: String) -> Bool {
         let normalized = token.trimmingCharacters(in: .whitespacesAndNewlines)
         return normalized.isEmpty
             || normalized == "cursor-local"

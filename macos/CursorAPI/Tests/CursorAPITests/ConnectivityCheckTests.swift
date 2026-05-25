@@ -50,6 +50,21 @@ final class ConnectivityCheckTests: XCTestCase {
         XCTAssertNotEqual(first, empty)
         XCTAssertEqual(count, 0)
     }
+
+    func testSDKHarnessUsesSavedKeyForLocalPlaceholderTokens() {
+        let settings = CursorAPISettings(cursorAPIKey: "crsr_saved")
+
+        XCTAssertEqual(LocalCursorSDKHarness.resolvedCursorAPIKey(from: nil, settings: settings), "crsr_saved")
+        XCTAssertEqual(LocalCursorSDKHarness.resolvedCursorAPIKey(from: "Bearer cursor-local", settings: settings), "crsr_saved")
+        XCTAssertEqual(LocalCursorSDKHarness.resolvedCursorAPIKey(from: "Bearer CURSOR_API_KEY", settings: settings), "crsr_saved")
+        XCTAssertEqual(LocalCursorSDKHarness.resolvedCursorAPIKey(from: "Bearer {env:CURSOR_API_KEY}", settings: settings), "crsr_saved")
+    }
+
+    func testSDKHarnessAllowsDirectBearerKeys() {
+        let settings = CursorAPISettings(cursorAPIKey: "crsr_saved")
+
+        XCTAssertEqual(LocalCursorSDKHarness.resolvedCursorAPIKey(from: "Bearer crsr_direct", settings: settings), "crsr_direct")
+    }
 }
 
 private actor ConnectivityRecorder {
