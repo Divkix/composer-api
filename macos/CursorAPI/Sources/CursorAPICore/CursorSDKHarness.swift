@@ -39,7 +39,7 @@ public extension CursorSDKHarness {
 }
 
 public struct LocalCursorSDKHarness: CursorSDKHarness {
-    private static let sessionStore = CursorSDKSessionStore()
+    private static let sessionStore = CursorSDKSessionStore(maxEntries: 512)
 
     public init() {}
 
@@ -187,19 +187,46 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
     }
 }
 
-private actor CursorSDKSessionStore {
+actor CursorSDKSessionStore {
+    private let maxEntries: Int
+    private var sessionOrder: [String] = []
     private var agents: [String: String] = [:]
+
+    init(maxEntries: Int) {
+        self.maxEntries = max(1, maxEntries)
+    }
 
     func agentID(for sessionKey: String?) -> String {
         guard let sessionKey, !sessionKey.isEmpty else {
             return "agent-\(UUID().uuidString.lowercased())"
         }
         if let existing = agents[sessionKey] {
+            touch(sessionKey)
             return existing
         }
         let created = "agent-\(UUID().uuidString.lowercased())"
         agents[sessionKey] = created
+        touch(sessionKey)
+        evictIfNeeded()
         return created
+    }
+
+    func count() -> Int {
+        agents.count
+    }
+
+    private func touch(_ sessionKey: String) {
+        if let index = sessionOrder.firstIndex(of: sessionKey) {
+            sessionOrder.remove(at: index)
+        }
+        sessionOrder.append(sessionKey)
+    }
+
+    private func evictIfNeeded() {
+        while sessionOrder.count > maxEntries, let evicted = sessionOrder.first {
+            sessionOrder.removeFirst()
+            agents.removeValue(forKey: evicted)
+        }
     }
 }
 

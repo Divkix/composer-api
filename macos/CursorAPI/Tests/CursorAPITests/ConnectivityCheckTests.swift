@@ -1,4 +1,4 @@
-import CursorAPICore
+@testable import CursorAPICore
 import XCTest
 
 final class ConnectivityCheckTests: XCTestCase {
@@ -19,6 +19,36 @@ final class ConnectivityCheckTests: XCTestCase {
         XCTAssertEqual(request.model, "composer-2.5-fast")
         XCTAssertTrue(request.prompt.contains("Connectivity check"))
         XCTAssertTrue(request.sessionKey?.hasPrefix("diagnostics:") == true)
+    }
+
+    func testSDKSessionStoreReusesAndBoundsAgentIDs() async throws {
+        let store = CursorSDKSessionStore(maxEntries: 2)
+
+        let first = await store.agentID(for: "project-a")
+        let second = await store.agentID(for: "project-b")
+        let firstAgain = await store.agentID(for: "project-a")
+        let third = await store.agentID(for: "project-c")
+        let secondAfterEviction = await store.agentID(for: "project-b")
+        let count = await store.count()
+
+        XCTAssertEqual(first, firstAgain)
+        XCTAssertNotEqual(first, second)
+        XCTAssertNotEqual(third, first)
+        XCTAssertNotEqual(secondAfterEviction, second)
+        XCTAssertEqual(count, 2)
+    }
+
+    func testSDKSessionStoreDoesNotPersistAnonymousSessions() async throws {
+        let store = CursorSDKSessionStore(maxEntries: 2)
+
+        let first = await store.agentID(for: nil)
+        let second = await store.agentID(for: nil)
+        let empty = await store.agentID(for: "")
+        let count = await store.count()
+
+        XCTAssertNotEqual(first, second)
+        XCTAssertNotEqual(first, empty)
+        XCTAssertEqual(count, 0)
     }
 }
 
