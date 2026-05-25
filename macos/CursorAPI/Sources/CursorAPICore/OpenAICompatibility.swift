@@ -6,6 +6,16 @@ public struct OpenAIToolSpec: Codable, Equatable, Sendable {
     public var parameters: JSONValue?
 }
 
+public struct ResponseToolCallMemory: Equatable, Sendable {
+    public var name: String
+    public var arguments: [String: JSONValue]
+
+    public init(name: String, arguments: [String: JSONValue]) {
+        self.name = name
+        self.arguments = arguments
+    }
+}
+
 public struct PreparedChatRequest: Equatable, Sendable {
     public var model: String
     public var cursorModelID: String
@@ -61,7 +71,7 @@ public enum OpenAICompatibility {
         appendToolInventory(&transcript, tools: tools, toolChoice: raw["tool_choice"])
         transcript.append("")
         transcript.append("Conversation:")
-        var rememberedToolCalls: [String: (name: String, arguments: [String: Any])] = [:]
+        var rememberedToolCalls: [String: ResponseToolCallMemory] = [:]
 
         for item in messages {
             let role = (item["role"] as? String) ?? "user"
@@ -136,6 +146,10 @@ public enum OpenAICompatibility {
     }
 
     public static func prepareResponsesRequest(_ body: Data) throws -> PreparedChatRequest {
+        try prepareResponsesRequest(body, rememberedToolCalls: [:])
+    }
+
+    static func prepareResponsesRequest(_ body: Data, rememberedToolCalls: [String: ResponseToolCallMemory]) throws -> PreparedChatRequest {
         let raw = try jsonObject(body)
         let requestedModel = (raw["model"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
         let model = requestedModel?.isEmpty == false ? requestedModel! : "composer-2.5"
@@ -158,7 +172,7 @@ public enum OpenAICompatibility {
         }
         transcript.append("")
         transcript.append("INPUT:")
-        var rememberedToolCalls: [String: (name: String, arguments: [String: Any])] = [:]
+        var rememberedToolCalls = rememberedToolCalls
         let input = raw["input"]
         let appendedInput = appendResponsesInput(input, to: &transcript, remembered: &rememberedToolCalls)
         if !appendedInput {
@@ -179,6 +193,21 @@ public enum OpenAICompatibility {
             storeResponse: raw["store"] as? Bool ?? true,
             responseInputItems: normalizedResponseInputItems(input)
         )
+    }
+
+    public static func responseToolCallMemory(
+        id: String,
+        prepared: PreparedChatRequest,
+        output: CursorSDKOutput
+    ) -> [String: ResponseToolCallMemory] {
+        let suffix = id.replacingOccurrences(of: "[^A-Za-z0-9]", with: "", options: .regularExpression).suffix(18)
+        return Dictionary(uniqueKeysWithValues: output.toolCalls.enumerated().map { index, toolCall in
+            let resolved = resolveToolCall(toolCall, tools: prepared.tools)
+            return (
+                "call_\(suffix)_\(index)",
+                ResponseToolCallMemory(name: resolved.name, arguments: resolved.arguments)
+            )
+        })
     }
 
     public static func responseInputItemsObject(_ inputItems: [JSONValue]) -> [String: Any] {
@@ -718,7 +747,7 @@ public enum OpenAICompatibility {
     private static func appendResponsesInput(
         _ value: Any?,
         to transcript: inout [String],
-        remembered: inout [String: (name: String, arguments: [String: Any])]
+        remembered: inout [String: ResponseToolCallMemory]
     ) -> Bool {
         if let value = value as? String {
             transcript.append(value.isEmpty ? "[empty]" : value)
@@ -733,9 +762,10 @@ public enum OpenAICompatibility {
                     let callID = (item["call_id"] as? String) ?? (item["id"] as? String) ?? ""
                     let name = (item["name"] as? String) ?? ""
                     let arguments = (item["arguments"] as? String) ?? "{}"
-                    let parsedArguments = (try? JSONSerialization.jsonObject(with: Data(arguments.utf8))) as? [String: Any] ?? [:]
+                    let parsedArguments = ((try? JSONSerialization.jsonObject(with: Data(arguments.utf8))) as? [String: Any] ?? [:])
+                        .mapValues(JSONValue.from)
                     if !callID.isEmpty {
-                        remembered[callID] = (name: name, arguments: parsedArguments)
+                        remembered[callID] = ResponseToolCallMemory(name: name, arguments: parsedArguments)
                     }
                     transcript.append("ASSISTANT FUNCTION_CALL: \(jsonString(["call_id": callID, "name": name, "arguments": arguments]))")
                     continue
@@ -865,7 +895,7 @@ public enum OpenAICompatibility {
         return nil
     }
 
-    private static func rememberToolCalls(_ toolCalls: [[String: Any]], into remembered: inout [String: (name: String, arguments: [String: Any])]) {
+    private static func rememberToolCalls(_ toolCalls: [[String: Any]], into remembered: inout [String: ResponseToolCallMemory]) {
         for toolCall in toolCalls {
             guard let id = toolCall["id"] as? String,
                   let function = toolCall["function"] as? [String: Any],
@@ -874,8 +904,9 @@ public enum OpenAICompatibility {
             }
             let argsString = function["arguments"] as? String ?? "{}"
             let argsData = Data(argsString.utf8)
-            let args = (try? JSONSerialization.jsonObject(with: argsData)) as? [String: Any] ?? [:]
-            remembered[id] = (name: name, arguments: args)
+            let args = ((try? JSONSerialization.jsonObject(with: argsData)) as? [String: Any] ?? [:])
+                .mapValues(JSONValue.from)
+            remembered[id] = ResponseToolCallMemory(name: name, arguments: args)
         }
     }
 
@@ -883,13 +914,13 @@ public enum OpenAICompatibility {
         toolCallID: String,
         toolName: String,
         text: String,
-        remembered: [String: (name: String, arguments: [String: Any])]
+        remembered: [String: ResponseToolCallMemory]
     ) -> String {
         let rememberedCall = remembered[toolCallID]
         let record: [String: Any] = [
             "toolCallId": toolCallID,
             "toolName": toolName.isEmpty ? rememberedCall?.name ?? "" : toolName,
-            "arguments": rememberedCall?.arguments ?? [:],
+            "arguments": rememberedCall?.arguments.mapValues(\.foundationValue) ?? [:],
             "result": text
         ]
         let data = (try? JSONSerialization.data(withJSONObject: record, options: [.withoutEscapingSlashes])) ?? Data("{}".utf8)

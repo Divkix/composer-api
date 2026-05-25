@@ -395,6 +395,48 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertTrue(sessionKeys[0].hasPrefix("response:"))
     }
 
+    func testResponsesPreviousResponseIDCarriesFunctionCallMemory() async throws {
+        let port = UInt16(Int.random(in: 29_000...38_999))
+        let recorder = PreparedRequestRecorder()
+        let toolCall = CursorToolCall(name: "shell", arguments: ["command": .string("pwd")])
+        let server = LocalAPIServer(settingsProvider: { CursorAPISettings(port: port) }, harness: MockHarness(events: [
+            .toolCall(toolCall),
+            .done(CursorSDKOutput(text: "", toolCalls: [toolCall], agentID: "agent-test", runID: "run-test"))
+        ], recorder: recorder))
+        try server.start(port: port)
+        defer { server.stop() }
+        try await Task.sleep(nanoseconds: 150_000_000)
+
+        let first = try await postResponse(port: port, body: #"""
+        {
+          "model":"composer-2.5",
+          "input":"run pwd",
+          "tools":[{"type":"function","name":"bash","parameters":{"type":"object","properties":{"command":{"type":"string"}}}}]
+        }
+        """#)
+        let firstID = try XCTUnwrap(first["id"] as? String)
+        let output = try XCTUnwrap(first["output"] as? [[String: Any]])
+        let functionCall = try XCTUnwrap(output.first { ($0["type"] as? String) == "function_call" })
+        let callID = try XCTUnwrap(functionCall["call_id"] as? String)
+
+        _ = try await postResponse(port: port, body: #"""
+        {
+          "model":"composer-2.5",
+          "previous_response_id":"\#(firstID)",
+          "input":[{"type":"function_call_output","call_id":"\#(callID)","output":"/tmp/project"}]
+        }
+        """#)
+
+        let prompts = await recorder.prompts()
+        XCTAssertEqual(prompts.count, 2)
+        XCTAssertTrue(prompts[1].contains("FUNCTION CALL OUTPUT (name=bash call_id=\(callID))"))
+        XCTAssertTrue(prompts[1].contains("LOCAL TOOL RESULT"))
+        XCTAssertTrue(prompts[1].contains("bash"))
+        XCTAssertTrue(prompts[1].contains("command"))
+        XCTAssertTrue(prompts[1].contains("pwd"))
+        XCTAssertTrue(prompts[1].contains("/tmp/project"))
+    }
+
     func testResponsesProjectMetadataSeparatesAndReusesSDKSessions() async throws {
         let port = UInt16(Int.random(in: 29_000...38_999))
         let recorder = PreparedRequestRecorder()

@@ -146,6 +146,12 @@ public final class LocalAPIServer: @unchecked Sendable {
             }
             if request.method == "POST", path == "/v1/responses" {
                 var prepared = try OpenAICompatibility.prepareResponsesRequest(request.body)
+                if let previousResponseID = prepared.previousResponseID {
+                    let rememberedToolCalls = await responseSessions.responseToolCalls(responseID: previousResponseID)
+                    if !rememberedToolCalls.isEmpty {
+                        prepared = try OpenAICompatibility.prepareResponsesRequest(request.body, rememberedToolCalls: rememberedToolCalls)
+                    }
+                }
                 let settings = settingsProvider()
                 let id = "resp_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
                 prepared.sessionKey = await responseSessions.sessionKey(
@@ -164,6 +170,10 @@ public final class LocalAPIServer: @unchecked Sendable {
                 let output = try await harness.complete(prepared: prepared, settings: settings, authorization: request.header("authorization"))
                 let responseObject = OpenAICompatibility.responseObject(id: id, created: created, prepared: prepared, output: output)
                 let response = try HTTPResponse.json(responseObject)
+                await responseSessions.storeToolCalls(
+                    responseID: id,
+                    toolCalls: OpenAICompatibility.responseToolCallMemory(id: id, prepared: prepared, output: output)
+                )
                 if prepared.storeResponse {
                     let inputItems = try JSONSerialization.data(
                         withJSONObject: OpenAICompatibility.responseInputItemsObject(prepared.responseInputItems),
@@ -367,6 +377,10 @@ public final class LocalAPIServer: @unchecked Sendable {
                         startTextIfNeeded()
                     }
                     let completedResponse = OpenAICompatibility.responseObject(id: id, created: created, prepared: prepared, output: output)
+                    await responseSessions.storeToolCalls(
+                        responseID: id,
+                        toolCalls: OpenAICompatibility.responseToolCallMemory(id: id, prepared: prepared, output: output)
+                    )
                     if prepared.storeResponse,
                        let responseData = try? JSONSerialization.data(withJSONObject: completedResponse, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]),
                        let inputItemsData = try? JSONSerialization.data(
@@ -562,6 +576,7 @@ private actor LocalResponseSessionStore {
     private var responseSessions: [String: String] = [:]
     private var storedResponses: [String: Data] = [:]
     private var storedResponseInputItems: [String: Data] = [:]
+    private var storedResponseToolCalls: [String: [String: ResponseToolCallMemory]] = [:]
 
     func sessionKey(responseID: String, previousResponseID: String?, explicitSessionKey: String?) -> String {
         let sessionKey: String
@@ -583,12 +598,21 @@ private actor LocalResponseSessionStore {
         storedResponseInputItems[responseID] = inputItemsData
     }
 
+    func storeToolCalls(responseID: String, toolCalls: [String: ResponseToolCallMemory]) {
+        guard !toolCalls.isEmpty else { return }
+        storedResponseToolCalls[responseID] = toolCalls
+    }
+
     func responseData(responseID: String) -> Data? {
         storedResponses[responseID]
     }
 
     func responseInputItemsData(responseID: String) -> Data? {
         storedResponseInputItems[responseID]
+    }
+
+    func responseToolCalls(responseID: String) -> [String: ResponseToolCallMemory] {
+        storedResponseToolCalls[responseID] ?? [:]
     }
 }
 
