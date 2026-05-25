@@ -55,7 +55,7 @@ final class CursorAPIAppModel: ObservableObject {
 
     var sdkStatusText: String {
         if !sdkConfigured {
-            return "Bridge Missing"
+            return "Routing Missing"
         }
         if !hasCursorAPIKey {
             return "Needs API Key"
@@ -76,7 +76,7 @@ final class CursorAPIAppModel: ObservableObject {
         }
         guard sdkConfigured else {
             isRunning = false
-            statusText = "This build is missing Composer bridge defaults"
+            statusText = "This build is missing internal Composer routing"
             lastError = nil
             return
         }
@@ -180,7 +180,7 @@ final class CursorAPIAppModel: ObservableObject {
 
     func checkSDKConnectivity() {
         guard canCheckSDK else {
-            sdkCheckState = .failure(sdkConfigured ? "Enter a Cursor API key before checking Composer." : "This build is missing Composer bridge defaults.")
+            sdkCheckState = .failure(sdkConfigured ? "Enter a Cursor API key before checking Composer." : "This build is missing internal Composer routing.")
             return
         }
         isCheckingSDK = true
@@ -192,7 +192,7 @@ final class CursorAPIAppModel: ObservableObject {
                 settings.keychainCursorAPIKeyAvailable = true
                 needsKeychainPermission = false
                 _ = try await connectivityCheck.run(settings: resolved)
-                sdkCheckState = .success("Composer bridge responded.")
+                sdkCheckState = .success("Composer routing responded.")
                 lastError = nil
             } catch AppSettingsStoreError.keychainPermissionRequired {
                 needsKeychainPermission = true
@@ -207,13 +207,13 @@ final class CursorAPIAppModel: ObservableObject {
 
     private func updateStatusText() {
         if isRunning {
-            statusText = sdkConfigured ? "Listening on \(baseURL)" : "Listening on \(baseURL); bridge defaults missing"
+            statusText = sdkConfigured ? "Listening on \(baseURL)" : "Listening on \(baseURL); internal routing missing"
         } else if needsKeychainPermission {
             statusText = "Click Start to allow \(CursorAPIBrand.displayName) to read the saved key from Keychain"
         } else if !hasCursorAPIKey {
             statusText = "Enter a Cursor API key to start the local API"
         } else if !sdkConfigured {
-            statusText = "This build is missing Composer bridge defaults"
+            statusText = "This build is missing internal Composer routing"
         } else {
             statusText = "Ready to start local API"
         }

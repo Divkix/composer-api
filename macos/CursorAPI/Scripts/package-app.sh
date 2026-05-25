@@ -24,10 +24,10 @@ while [ "$#" -gt 0 ]; do
       cat <<USAGE
 Usage: $0 [--development|--release]
 
-  --development  Build a local development app. Missing bundled bridge defaults
-                 are allowed and the app will show Bridge Missing. This is the
+  --development  Build a local development app. Missing bundled routing defaults
+                 are allowed and the app will show Routing Missing. This is the
                  default.
-  --release      Refuse to package unless complete bundled Composer bridge
+  --release      Refuse to package unless complete bundled Composer routing
                  defaults are available from local environment files or the
                  current environment.
 USAGE
@@ -124,22 +124,22 @@ for (environmentKey, plistKey) in mappings {
 
 let requiredKeys = ["cursorAPIBaseURL", "backendBaseURL", "localAgentEndpoint"]
 let missingKeys = requiredKeys.filter { defaults[$0] == nil }
-let hasCompleteBridge = missingKeys.isEmpty
-if hasCompleteBridge {
+let hasCompleteRouting = missingKeys.isEmpty
+if hasCompleteRouting {
     let outputURL = resourcesDirectory.appendingPathComponent("CursorAPITransportDefaults.plist")
     guard NSDictionary(dictionary: defaults).write(to: outputURL, atomically: true) else {
-        FileHandle.standardError.write(Data("Could not write bundled Composer bridge defaults.\n".utf8))
+        FileHandle.standardError.write(Data("Could not write bundled Composer routing defaults.\n".utf8))
         exit(1)
     }
-    print("Embedded bundled Composer bridge defaults.")
+    print("Embedded bundled Composer routing defaults.")
 } else {
-    let message = "No complete bundled Composer bridge defaults found; missing \(missingKeys.joined(separator: ", "))."
+    let message = "No complete bundled Composer routing defaults found; missing \(missingKeys.joined(separator: ", "))."
     let required = ["1", "true", "yes"].contains((environment["CURSOR_API_REQUIRE_BUNDLED_TRANSPORT"] ?? "").lowercased())
     if required {
         FileHandle.standardError.write(Data("\(message) Refusing release package.\n".utf8))
         exit(2)
     }
-    print("\(message) This build will show Bridge Missing.")
+    print("\(message) This build will show Routing Missing.")
 }
 SWIFT
 mkdir -p "$ICONSET_DIR"

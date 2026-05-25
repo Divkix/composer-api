@@ -48,7 +48,7 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
             Task {
                 do {
                     guard settings.hasCursorSDKConfiguration else {
-                        throw CursorAPIError.invalidConfiguration("This \(CursorAPIBrand.displayName) build is missing its bundled Composer bridge defaults. Repackage the app with bridge defaults or inspect Settings > Advanced Bridge Overrides.")
+                        throw CursorAPIError.invalidConfiguration("This \(CursorAPIBrand.displayName) build is missing its bundled internal Composer routing. Repackage the app with routing defaults or inspect Settings > Advanced Routing Overrides.")
                     }
 
                     let apiKey = cursorAPIKey(from: authorization, settings: settings)
@@ -91,7 +91,7 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
 
     private func exchangeCursorAPIKey(_ apiKey: String, settings: CursorAPISettings) async throws -> String {
         guard settings.hasCursorAPIExchangeConfiguration else {
-            throw CursorAPIError.invalidConfiguration("This \(CursorAPIBrand.displayName) build is missing its bundled Composer key-exchange origin. Repackage the app with complete bridge defaults or inspect Settings > Advanced Bridge Overrides.")
+            throw CursorAPIError.invalidConfiguration("This \(CursorAPIBrand.displayName) build is missing its bundled Composer key-exchange origin. Repackage the app with complete routing defaults or inspect Settings > Advanced Routing Overrides.")
         }
         guard let base = URL(string: settings.cursorAPIBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
             throw CursorAPIError.invalidConfiguration("Cursor key-exchange origin is not a valid URL.")
