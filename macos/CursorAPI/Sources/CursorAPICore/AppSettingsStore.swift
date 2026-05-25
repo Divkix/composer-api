@@ -9,7 +9,7 @@ public enum AppSettingsStoreError: Error, LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .keychainPermissionRequired:
-            return "macOS needs permission before CursorAPI can read the saved API key from Keychain."
+            return "macOS needs permission before \(CursorAPIBrand.displayName) can read the saved API key from Keychain."
         case .missingCursorAPIKey:
             return "Enter a Cursor API key to start the local API."
         }

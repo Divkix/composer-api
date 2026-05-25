@@ -14,6 +14,7 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertEqual(object["host"] as? String, "127.0.0.1")
+        XCTAssertEqual(object["service"] as? String, CursorAPIBrand.displayName)
         XCTAssertEqual(object["sdkConfigured"] as? Bool, false)
         XCTAssertEqual(object["baseUrl"] as? String, "http://127.0.0.1:\(port)/v1")
     }
@@ -88,6 +89,61 @@ final class LocalAPIServerTests: XCTestCase {
         let text = String(data: data, encoding: .utf8) ?? ""
         XCTAssertTrue(text.contains("\"object\" : \"response\""))
         XCTAssertTrue(text.contains("ok"))
+    }
+
+    func testResponsesEndpointStoresResponseForRetrieval() async throws {
+        let port = UInt16(Int.random(in: 29_000...38_999))
+        let server = LocalAPIServer(settingsProvider: { CursorAPISettings(port: port) }, harness: MockHarness())
+        try server.start(port: port)
+        defer { server.stop() }
+        try await Task.sleep(nanoseconds: 150_000_000)
+
+        let created = try await postResponse(port: port, body: #"{"model":"composer-2.5","input":"hello"}"#)
+        let responseID = try XCTUnwrap(created["id"] as? String)
+        let (status, retrieved) = try await getResponse(port: port, responseID: responseID)
+
+        XCTAssertEqual(status, 200)
+        XCTAssertEqual(retrieved?["id"] as? String, responseID)
+        XCTAssertEqual(retrieved?["object"] as? String, "response")
+        XCTAssertEqual(retrieved?["model"] as? String, "composer-2.5")
+    }
+
+    func testResponsesStoreFalseDoesNotPersistForRetrieval() async throws {
+        let port = UInt16(Int.random(in: 29_000...38_999))
+        let server = LocalAPIServer(settingsProvider: { CursorAPISettings(port: port) }, harness: MockHarness())
+        try server.start(port: port)
+        defer { server.stop() }
+        try await Task.sleep(nanoseconds: 150_000_000)
+
+        let created = try await postResponse(port: port, body: #"{"model":"composer-2.5","store":false,"input":"hello"}"#)
+        let responseID = try XCTUnwrap(created["id"] as? String)
+        let (status, retrieved) = try await getResponse(port: port, responseID: responseID)
+
+        XCTAssertEqual(status, 404)
+        XCTAssertNil(retrieved?["id"])
+    }
+
+    func testStreamingResponsesStoreCompletedResponseForRetrieval() async throws {
+        let port = UInt16(Int.random(in: 29_000...38_999))
+        let server = LocalAPIServer(settingsProvider: { CursorAPISettings(port: port) }, harness: MockHarness())
+        try server.start(port: port)
+        defer { server.stop() }
+        try await Task.sleep(nanoseconds: 150_000_000)
+
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/responses")!)
+        request.httpMethod = "POST"
+        request.httpBody = Data(#"{"model":"composer-2.5","stream":true,"input":"hello"}"#.utf8)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        let text = String(data: data, encoding: .utf8) ?? ""
+        let responseID = try XCTUnwrap(text.firstMatch(of: /"id":"(resp_[A-Za-z0-9]+)"/)?.1)
+        let (status, retrieved) = try await getResponse(port: port, responseID: String(responseID))
+
+        XCTAssertEqual(status, 200)
+        XCTAssertEqual(retrieved?["id"] as? String, String(responseID))
+        XCTAssertEqual(retrieved?["object"] as? String, "response")
     }
 
     func testResponsesPreviousResponseIDContinuesSameSDKSession() async throws {
@@ -469,6 +525,14 @@ private extension LocalAPIServerTests {
         let (data, response) = try await URLSession.shared.data(for: request)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
         return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    func getResponse(port: UInt16, responseID: String) async throws -> (Int, [String: Any]?) {
+        let url = URL(string: "http://127.0.0.1:\(port)/v1/responses/\(responseID)")!
+        let (data, response) = try await URLSession.shared.data(from: url)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+        let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        return (status, object)
     }
 
     func decodedArguments(_ function: [String: Any]) throws -> [String: Any] {

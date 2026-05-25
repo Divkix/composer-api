@@ -64,7 +64,7 @@ public final class AgentProvisioner: @unchecked Sendable {
         var provider = root["provider"] as? [String: Any] ?? [:]
         provider["cursorapi"] = [
             "npm": "@ai-sdk/openai-compatible",
-            "name": "CursorAPI",
+            "name": CursorAPIBrand.displayName,
             "options": [
                 "baseURL": settings.baseURL.absoluteString,
                 "apiKey": "cursor-local"
@@ -103,7 +103,7 @@ public final class AgentProvisioner: @unchecked Sendable {
         let block = """
 
         [model_providers.cursorapi]
-        name = "CursorAPI"
+        name = "\(CursorAPIBrand.displayName)"
         base_url = "\(settings.baseURL.absoluteString)"
         wire_api = "responses"
 
@@ -140,7 +140,7 @@ public final class AgentProvisioner: @unchecked Sendable {
         }
         let text = fileText(url)
         let installed = text.contains(settings.baseURL.absoluteString)
-        let detail = installed ? "Model metadata installed" : text.contains("CursorAPI") ? "Model metadata found with a different local URL" : "Ready to install"
+        let detail = installed ? "Model metadata installed" : (text.contains("CursorAPI") || text.contains(CursorAPIBrand.displayName)) ? "Model metadata found with a different local URL" : "Ready to install"
         return AgentIntegrationStatus(id: .vscode, installed: installed, configPath: url.path, detail: detail)
     }
 
@@ -149,10 +149,11 @@ public final class AgentProvisioner: @unchecked Sendable {
         var array = try readJSONArray(url, defaultValue: [])
         array.removeAll { item in
             guard let record = item as? [String: Any] else { return false }
-            return record["name"] as? String == "CursorAPI"
+            let name = record["name"] as? String
+            return name == "CursorAPI" || name == CursorAPIBrand.displayName
         }
         array.append([
-            "name": "CursorAPI",
+            "name": CursorAPIBrand.displayName,
             "provider": "openai-compatible",
             "baseUrl": settings.baseURL.absoluteString,
             "models": ["composer-2.5", "composer-2.5-fast"]

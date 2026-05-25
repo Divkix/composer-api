@@ -172,7 +172,7 @@ public enum CursorSDKProto {
 
     public static func requestContextResult(id: Int, execID: String?) -> Data {
         let env = Proto.message([
-            Proto.stringField(1, "CursorAPI macOS"),
+            Proto.stringField(1, "\(CursorAPIBrand.displayName) macOS"),
             Proto.stringField(2, "."),
             Proto.stringField(3, "sh"),
             Proto.boolField(5, false),

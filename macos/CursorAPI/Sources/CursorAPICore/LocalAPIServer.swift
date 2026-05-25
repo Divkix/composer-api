@@ -96,7 +96,7 @@ public final class LocalAPIServer: @unchecked Sendable {
                 let settings = settingsProvider()
                 return try .response(HTTPResponse.json([
                     "ok": true,
-                    "service": "CursorAPI",
+                    "service": CursorAPIBrand.displayName,
                     "baseUrl": settings.baseURL.absoluteString,
                     "host": "127.0.0.1",
                     "sdkConfigured": settings.hasCursorSDKConfiguration
@@ -139,7 +139,18 @@ public final class LocalAPIServer: @unchecked Sendable {
                     ))
                 }
                 let output = try await harness.complete(prepared: prepared, settings: settings, authorization: request.header("authorization"))
-                return try .response(withCORS(HTTPResponse.json(OpenAICompatibility.responseObject(id: id, created: created, prepared: prepared, output: output))))
+                let responseObject = OpenAICompatibility.responseObject(id: id, created: created, prepared: prepared, output: output)
+                let response = try HTTPResponse.json(responseObject)
+                if prepared.storeResponse {
+                    await responseSessions.storeResponse(responseID: id, data: response.body)
+                }
+                return .response(withCORS(response))
+            }
+            if request.method == "GET", let responseID = responseID(from: request.path) {
+                guard let data = await responseSessions.responseData(responseID: responseID) else {
+                    throw CursorAPIError.notFound
+                }
+                return .response(withCORS(HTTPResponse.data(data, contentType: "application/json; charset=utf-8")))
             }
             throw CursorAPIError.notFound
         } catch {
@@ -280,13 +291,19 @@ public final class LocalAPIServer: @unchecked Sendable {
                     if includeMessage {
                         startTextIfNeeded()
                     }
+                    let completedResponse = OpenAICompatibility.responseObject(id: id, created: created, prepared: prepared, output: output)
+                    if prepared.storeResponse,
+                       let data = try? JSONSerialization.data(withJSONObject: completedResponse, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]) {
+                        await responseSessions.storeResponse(responseID: id, data: data)
+                    }
                     for chunk in OpenAICompatibility.responseStreamFinish(
                         id: id,
                         created: created,
                         prepared: prepared,
                         output: output,
                         includeMessage: includeMessage,
-                        textOutputIndex: textOutputIndex
+                        textOutputIndex: textOutputIndex,
+                        completedResponse: completedResponse
                     ) {
                         continuation.yield(chunk)
                     }
@@ -403,6 +420,14 @@ public final class LocalAPIServer: @unchecked Sendable {
         ]
     }
 
+    private func responseID(from path: String) -> String? {
+        let prefix = "/v1/responses/"
+        guard path.hasPrefix(prefix) else { return nil }
+        let value = String(path.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, !value.contains("/") else { return nil }
+        return value
+    }
+
     private func sessionAffinity(_ request: HTTPRequest) -> String? {
         request.header("x-session-affinity")?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty
             ?? request.header("x-opencode-session-id")?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty
@@ -417,6 +442,7 @@ public final class LocalAPIServer: @unchecked Sendable {
 
 private actor LocalResponseSessionStore {
     private var responseSessions: [String: String] = [:]
+    private var storedResponses: [String: Data] = [:]
 
     func sessionKey(responseID: String, previousResponseID: String?, explicitSessionKey: String?) -> String {
         let sessionKey: String
@@ -431,6 +457,14 @@ private actor LocalResponseSessionStore {
         }
         responseSessions[responseID] = sessionKey
         return sessionKey
+    }
+
+    func storeResponse(responseID: String, data: Data) {
+        storedResponses[responseID] = data
+    }
+
+    func responseData(responseID: String) -> Data? {
+        storedResponses[responseID]
     }
 }
 

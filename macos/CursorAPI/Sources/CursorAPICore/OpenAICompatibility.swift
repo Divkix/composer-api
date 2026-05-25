@@ -437,7 +437,8 @@ public enum OpenAICompatibility {
         prepared: PreparedChatRequest,
         output: CursorSDKOutput,
         includeMessage: Bool = true,
-        textOutputIndex: Int = 0
+        textOutputIndex: Int = 0,
+        completedResponse: [String: Any]? = nil
     ) -> [Data] {
         let messageID = "msg_\(id.dropFirst(5))"
         var chunks: [Data] = []
@@ -470,7 +471,7 @@ public enum OpenAICompatibility {
         }
         chunks.append(sse([
             "type": "response.completed",
-            "response": responseObject(id: id, created: created, prepared: prepared, output: output)
+            "response": completedResponse ?? responseObject(id: id, created: created, prepared: prepared, output: output)
         ], event: "response.completed"))
         return chunks
     }

@@ -1,4 +1,4 @@
-Integration icons are bundled so CursorAPI can render them offline.
+Integration icons are bundled so API for Cursor can render them offline.
 
 - `opencode.png`: OpenCode brand asset from `sst/opencode`
 - `codex.png`: OpenAI mark cropped from the repository's OpenAI logo asset

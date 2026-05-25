@@ -92,7 +92,7 @@ final class CursorAPIAppModel: ObservableObject {
         } catch AppSettingsStoreError.keychainPermissionRequired {
             isRunning = false
             needsKeychainPermission = true
-            statusText = "Click Start to allow CursorAPI to read the saved key from Keychain"
+            statusText = "Click Start to allow \(CursorAPIBrand.displayName) to read the saved key from Keychain"
             lastError = nil
         } catch AppSettingsStoreError.missingCursorAPIKey {
             isRunning = false
@@ -211,7 +211,7 @@ final class CursorAPIAppModel: ObservableObject {
         if isRunning {
             statusText = sdkConfigured ? "Listening on \(baseURL)" : "Listening on \(baseURL); bridge defaults missing"
         } else if needsKeychainPermission {
-            statusText = "Click Start to allow CursorAPI to read the saved key from Keychain"
+            statusText = "Click Start to allow \(CursorAPIBrand.displayName) to read the saved key from Keychain"
         } else if !hasCursorAPIKey {
             statusText = "Enter a Cursor API key to start the local API"
         } else if !sdkConfigured {

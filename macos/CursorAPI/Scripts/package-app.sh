@@ -3,14 +3,16 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="$ROOT_DIR/.build/release"
-APP_DIR="$ROOT_DIR/dist/CursorAPI.app"
+APP_NAME="API for Cursor"
+APP_DIR="$ROOT_DIR/dist/$APP_NAME.app"
+LEGACY_APP_DIR="$ROOT_DIR/dist/CursorAPI.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
-ICONSET_DIR="$RESOURCES_DIR/CursorAPI.iconset"
+ICONSET_DIR="$RESOURCES_DIR/APIForCursor.iconset"
 
 swift build --package-path "$ROOT_DIR" -c release
-rm -rf "$APP_DIR"
+rm -rf "$APP_DIR" "$LEGACY_APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp "$BUILD_DIR/CursorAPI" "$MACOS_DIR/CursorAPI"
 if [ -d "$BUILD_DIR/CursorAPI_CursorAPI.bundle" ]; then
@@ -272,7 +274,7 @@ for spec in specs {
     try writeIcon(points: spec.0, scale: spec.1, name: spec.2)
 }
 SWIFT
-iconutil -c icns "$ICONSET_DIR" -o "$RESOURCES_DIR/CursorAPI.icns"
+iconutil -c icns "$ICONSET_DIR" -o "$RESOURCES_DIR/APIForCursor.icns"
 rm -rf "$ICONSET_DIR"
 cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -284,11 +286,11 @@ cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
   <key>CFBundleIdentifier</key>
   <string>ai.standardagents.cursorapi</string>
   <key>CFBundleName</key>
-  <string>CursorAPI</string>
+  <string>API for Cursor</string>
   <key>CFBundleDisplayName</key>
-  <string>CursorAPI</string>
+  <string>API for Cursor</string>
   <key>CFBundleIconFile</key>
-  <string>CursorAPI</string>
+  <string>APIForCursor</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -305,6 +307,6 @@ cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
 </plist>
 PLIST
 codesign --force --deep --sign - "$APP_DIR" >/dev/null
-rm -f "$ROOT_DIR/dist/CursorAPI.zip"
-ditto -c -k --keepParent "$APP_DIR" "$ROOT_DIR/dist/CursorAPI.zip"
+rm -f "$ROOT_DIR/dist/API for Cursor.zip" "$ROOT_DIR/dist/CursorAPI.zip"
+ditto -c -k --keepParent "$APP_DIR" "$ROOT_DIR/dist/API for Cursor.zip"
 echo "$APP_DIR"

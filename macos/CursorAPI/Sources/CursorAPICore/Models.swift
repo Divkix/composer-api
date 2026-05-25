@@ -1,5 +1,9 @@
 import Foundation
 
+public enum CursorAPIBrand {
+    public static let displayName = "API for Cursor"
+}
+
 public struct CursorAPISettings: Codable, Equatable, Sendable {
     public static let legacyCursorAPIBaseURL = "https://api.cursor.com"
 

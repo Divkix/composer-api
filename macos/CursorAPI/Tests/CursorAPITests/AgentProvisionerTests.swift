@@ -11,6 +11,7 @@ final class AgentProvisionerTests: XCTestCase {
         let config = home.appending(path: ".config/opencode/opencode.json")
         let text = try String(contentsOf: config, encoding: .utf8)
         XCTAssertTrue(text.contains("cursorapi"))
+        XCTAssertTrue(text.contains(CursorAPIBrand.displayName))
         XCTAssertTrue(text.contains("cursor-local"))
         XCTAssertTrue(text.contains("composer-2.5-fast"))
         XCTAssertTrue(provisioner.status(for: .opencode, settings: settings).installed)
@@ -25,6 +26,7 @@ final class AgentProvisionerTests: XCTestCase {
         let config = home.appending(path: ".codex/config.toml")
         let text = try String(contentsOf: config, encoding: .utf8)
         XCTAssertTrue(text.contains("[model_providers.cursorapi]"))
+        XCTAssertTrue(text.contains("name = \"\(CursorAPIBrand.displayName)\""))
         XCTAssertTrue(text.contains("[model_providers.cursorapi.auth]"))
         XCTAssertTrue(text.contains("wire_api = \"responses\""))
         XCTAssertTrue(text.contains("command = \"/bin/echo\""))
@@ -170,7 +172,7 @@ final class AgentProvisionerTests: XCTestCase {
 
         let config = home.appending(path: "Library/Application Support/Code/User/chatLanguageModels.json")
         let text = try String(contentsOf: config, encoding: .utf8)
-        XCTAssertTrue(text.contains("CursorAPI"))
+        XCTAssertTrue(text.contains(CursorAPIBrand.displayName))
         XCTAssertTrue(text.contains("composer-2.5-fast"))
         XCTAssertTrue(provisioner.status(for: .vscode, settings: settings).installed)
     }

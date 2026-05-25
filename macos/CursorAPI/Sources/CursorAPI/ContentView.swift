@@ -11,7 +11,7 @@ struct ContentView: View {
             Divider()
             if let lastError = model.lastError {
                 AppNoticeBanner(
-                    title: model.statusText == "Could not start" ? "Could not start" : "CursorAPI needs attention",
+                    title: model.statusText == "Could not start" ? "Could not start" : "\(CursorAPIBrand.displayName) needs attention",
                     message: lastError,
                     dismiss: model.dismissError
                 )
@@ -48,7 +48,7 @@ struct ContentView: View {
             CursorLogo()
 
             VStack(alignment: .leading, spacing: 3) {
-                Text("CursorAPI")
+                Text(CursorAPIBrand.displayName)
                     .font(.system(size: 20, weight: .semibold))
                 Text("Local OpenAI-compatible API for Composer 2.5")
                     .font(.system(size: 13))
@@ -369,7 +369,7 @@ struct KeychainPermissionPanel: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Saved key needs permission")
                     .font(.callout.weight(.semibold))
-                Text("CursorAPI stores your Cursor API key in macOS Keychain and only reads it when starting the local API.")
+                Text("\(CursorAPIBrand.displayName) stores your Cursor API key in macOS Keychain and only reads it when starting the local API.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -592,7 +592,7 @@ struct SettingsPage: View {
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 110)
                 }
-                SettingsFieldRow(title: "Launch at Login", subtitle: "Start CursorAPI when macOS signs in") {
+                SettingsFieldRow(title: "Launch at Login", subtitle: "Start \(CursorAPIBrand.displayName) when macOS signs in") {
                     Toggle("", isOn: $model.settings.launchAtLogin)
                         .labelsHidden()
                 }
@@ -676,7 +676,7 @@ struct AdvancedTransportGroup: View {
             VStack(alignment: .leading, spacing: 10) {
                 TransportOverrideNotice(configured: model.sdkConfigured)
 
-                Text("CursorAPI includes the SDK-compatible bridge layer. These fields only override where that layer connects; changing the client version alone does not enable a missing bridge.")
+                Text("\(CursorAPIBrand.displayName) includes the SDK-compatible bridge layer. These fields only override where that layer connects; changing the client version alone does not enable a missing bridge.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(.top, 6)
