@@ -34,17 +34,34 @@ public final class LocalAPIServer: @unchecked Sendable {
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: endpointPort)
         let listener = try NWListener(using: parameters)
+        let startResult = ListenerStartResult(port: port)
         listener.newConnectionHandler = { [weak self] connection in
             self?.accept(connection)
         }
         listener.stateUpdateHandler = { [weak self] state in
-            if case .ready = state {
+            switch state {
+            case .ready:
                 self?.port = port
+                startResult.succeed()
+            case .failed(let error):
+                self?.port = nil
+                startResult.fail(error)
+            case .cancelled:
+                self?.port = nil
+            default:
+                break
             }
         }
         listener.start(queue: queue)
         self.listener = listener
-        self.port = port
+        do {
+            try startResult.wait()
+        } catch {
+            listener.cancel()
+            self.listener = nil
+            self.port = nil
+            throw error
+        }
     }
 
     public func stop() {
@@ -619,6 +636,47 @@ private actor LocalResponseSessionStore {
 private extension String {
     var nonEmpty: String? {
         isEmpty ? nil : self
+    }
+}
+
+private final class ListenerStartResult: @unchecked Sendable {
+    private let port: UInt16
+    private let semaphore = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var result: Result<Void, any Error>?
+
+    init(port: UInt16) {
+        self.port = port
+    }
+
+    func succeed() {
+        complete(.success(()))
+    }
+
+    func fail(_ error: any Error) {
+        complete(.failure(CursorAPIError.transport("Could not listen on 127.0.0.1:\(port): \(error.localizedDescription)")))
+    }
+
+    func wait(timeout: TimeInterval = 2.0) throws {
+        let deadline = DispatchTime.now() + timeout
+        if semaphore.wait(timeout: deadline) == .timedOut {
+            throw CursorAPIError.transport("Timed out starting local API on 127.0.0.1:\(port).")
+        }
+        let completed = lock.withLock { result }
+        if case .failure(let error) = completed {
+            throw error
+        }
+    }
+
+    private func complete(_ newResult: Result<Void, any Error>) {
+        let shouldSignal = lock.withLock {
+            guard result == nil else { return false }
+            result = newResult
+            return true
+        }
+        if shouldSignal {
+            semaphore.signal()
+        }
     }
 }
 

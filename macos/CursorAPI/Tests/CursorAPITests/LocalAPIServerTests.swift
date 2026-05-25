@@ -19,6 +19,22 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual(object["baseUrl"] as? String, "http://127.0.0.1:\(port)/v1")
     }
 
+    func testStartFailsWhenPortIsAlreadyInUse() throws {
+        let port = UInt16(Int.random(in: 10_000...14_999))
+        let first = LocalAPIServer(settingsProvider: { CursorAPISettings(port: port) }, harness: MockHarness())
+        let second = LocalAPIServer(settingsProvider: { CursorAPISettings(port: port) }, harness: MockHarness())
+        try first.start(port: port)
+        defer {
+            first.stop()
+            second.stop()
+        }
+
+        XCTAssertThrowsError(try second.start(port: port)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("127.0.0.1:\(port)"))
+        }
+        XCTAssertNil(second.port)
+    }
+
     func testModelsEndpoint() async throws {
         let port = UInt16(Int.random(in: 39_000...49_000))
         let server = LocalAPIServer(settingsProvider: { CursorAPISettings(port: port) }, harness: MockHarness())
