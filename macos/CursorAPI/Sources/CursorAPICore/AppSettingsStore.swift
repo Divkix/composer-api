@@ -20,17 +20,23 @@ public final class AppSettingsStore: @unchecked Sendable {
     private let defaults: UserDefaults
     private let environment: [String: String]
     private let bundledTransportDefaults: @Sendable () -> [String: String]
+    private let keychainService: String
+    private let keychainAccount: String
     private let key = "CursorAPI.settings.v1"
     private let queue = DispatchQueue(label: "CursorAPI.AppSettingsStore")
 
     public init(
         defaults: UserDefaults = .standard,
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        bundledTransportDefaults: @escaping @Sendable () -> [String: String] = AppSettingsStore.loadBundledTransportDefaults
+        bundledTransportDefaults: @escaping @Sendable () -> [String: String] = AppSettingsStore.loadBundledTransportDefaults,
+        keychainService: String = "ai.standardagents.cursorapi",
+        keychainAccount: String = "cursor-api-key"
     ) {
         self.defaults = defaults
         self.environment = environment
         self.bundledTransportDefaults = bundledTransportDefaults
+        self.keychainService = keychainService
+        self.keychainAccount = keychainAccount
     }
 
     public func load() -> CursorAPISettings {
@@ -85,9 +91,6 @@ public final class AppSettingsStore: @unchecked Sendable {
         let env = environment
         if (!onlyWhenMissing || value.port == 8787), let envPort = env["CURSOR_API_PORT"], let port = UInt16(envPort) {
             value.port = port
-        }
-        if !onlyWhenMissing || value.cursorAPIKey.isEmpty {
-            value.cursorAPIKey = env["CURSOR_API_KEY"] ?? value.cursorAPIKey
         }
         if !onlyWhenMissing || isMissingCursorAPIBaseURL(value.cursorAPIBaseURL) {
             value.cursorAPIBaseURL = env["CURSOR_API_BASE"] ?? normalizedCursorAPIBaseURL(value.cursorAPIBaseURL)
@@ -204,8 +207,8 @@ public final class AppSettingsStore: @unchecked Sendable {
     private func keychainQuery() -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: "ai.standardagents.cursorapi",
-            kSecAttrAccount as String: "cursor-api-key"
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: keychainAccount
         ]
     }
 }

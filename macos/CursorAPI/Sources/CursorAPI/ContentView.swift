@@ -320,9 +320,11 @@ struct CursorLogo: View {
 
 struct APIKeyRequiredPanel: View {
     @ObservedObject var model: CursorAPIAppModel
+    @State private var draftKey = ""
+    @FocusState private var keyFieldFocused: Bool
 
     private var canSaveKey: Bool {
-        !model.settings.cursorAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !draftKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
@@ -340,10 +342,14 @@ struct APIKeyRequiredPanel: View {
             }
 
             HStack(spacing: 10) {
-                SecureField("crsr_...", text: $model.settings.cursorAPIKey)
+                SecureField("crsr_...", text: $draftKey)
                     .textFieldStyle(.roundedBorder)
+                    .focused($keyFieldFocused)
                 PillActionButton(model.sdkConfigured ? "Save & Start" : "Save Key") {
+                    model.settings.cursorAPIKey = draftKey
                     model.saveKeyAndStartIfReady()
+                    draftKey = ""
+                    keyFieldFocused = false
                 }
                 .disabled(!canSaveKey)
             }
@@ -355,6 +361,9 @@ struct APIKeyRequiredPanel: View {
                 .stroke(AppTheme.keyRequiredStroke, lineWidth: 1)
         }
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .onAppear {
+            keyFieldFocused = true
+        }
     }
 }
 

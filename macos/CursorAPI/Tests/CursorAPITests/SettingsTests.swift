@@ -125,6 +125,24 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(settings.clientVersion, "sdk-env")
     }
 
+    func testEnvironmentDoesNotLoadCursorAPIKey() {
+        let defaults = isolatedDefaults()
+        let store = AppSettingsStore(
+            defaults: defaults,
+            environment: [
+                "CURSOR_API_KEY": "crsr_env_should_not_be_loaded"
+            ],
+            bundledTransportDefaults: { [:] },
+            keychainService: "CursorAPI.SettingsTests.\(UUID().uuidString)",
+            keychainAccount: "cursor-api-key"
+        )
+
+        let settings = store.load()
+
+        XCTAssertEqual(settings.cursorAPIKey, "")
+        XCTAssertFalse(settings.hasCursorAPIKey)
+    }
+
     func testSavedTransportSettingsOverrideBundledDefaults() throws {
         let defaults = isolatedDefaults()
         let saved = CursorAPISettings(

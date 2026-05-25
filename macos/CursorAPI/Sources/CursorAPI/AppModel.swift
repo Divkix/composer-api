@@ -82,7 +82,6 @@ final class CursorAPIAppModel: ObservableObject {
         }
         do {
             settings = try store.resolvingCursorAPIKey(in: settings, allowUserPrompt: allowKeychainPrompt)
-            store.save(settings)
             settings.keychainCursorAPIKeyAvailable = true
             try server.start(port: settings.port)
             isRunning = true
@@ -190,7 +189,6 @@ final class CursorAPIAppModel: ObservableObject {
             do {
                 let resolved = try store.resolvingCursorAPIKey(in: settings, allowUserPrompt: true)
                 settings = resolved
-                store.save(settings)
                 settings.keychainCursorAPIKeyAvailable = true
                 needsKeychainPermission = false
                 _ = try await connectivityCheck.run(settings: resolved)
