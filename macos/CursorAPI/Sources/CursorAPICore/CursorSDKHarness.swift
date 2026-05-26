@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 public protocol CursorSDKHarness: Sendable {
     func stream(prepared: PreparedChatRequest, settings: CursorAPISettings, authorization: String?) -> AsyncThrowingStream<CursorSDKStreamEvent, any Error>
@@ -40,6 +41,7 @@ public extension CursorSDKHarness {
 
 public struct LocalCursorSDKHarness: CursorSDKHarness {
     private static let sessionStore = CursorSDKSessionStore(maxEntries: 512)
+    private static let accessTokenCache = CursorSDKAccessTokenCache(ttl: 10 * 60, maxEntries: 64)
 
     public init() {}
 
@@ -55,31 +57,36 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
                     guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                         throw CursorAPIError.unauthorized
                     }
-                    let accessToken = try await exchangeCursorAPIKey(apiKey, settings: settings)
-
                     let agentID = await Self.sessionStore.agentID(for: prepared.sessionKey)
                     let runID = "msg-\(UUID().uuidString.lowercased())"
-                    let requestID = UUID().uuidString.lowercased()
-                    let request = CursorSDKProto.runRequest(
-                        agentID: agentID,
-                        messageID: runID,
-                        modelID: prepared.cursorModelID,
-                        prompt: prepared.prompt
-                    )
-                    let framed = ConnectProto.frame(request)
-                    let decoder = CursorSDKFrameDecoderBox()
-                    _ = try await runRawSDKRequest(
-                        framedBody: framed,
-                        accessToken: accessToken,
-                        requestID: requestID,
-                        settings: settings
-                    ) { payload in
-                        let events = decoder.push(payload)
-                        for event in events {
-                            continuation.yield(event)
-                        }
+                    let tokenOrigin = settings.cursorAPIBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let accessToken = try await Self.accessTokenCache.token(for: apiKey, origin: tokenOrigin) {
+                        try await exchangeCursorAPIKey(apiKey, settings: settings)
                     }
-                    let output = decoder.output(agentID: agentID, runID: runID)
+                    let output: CursorSDKOutput
+                    do {
+                        output = try await runSDKRequest(
+                            agentID: agentID,
+                            runID: runID,
+                            prepared: prepared,
+                            accessToken: accessToken,
+                            settings: settings,
+                            onEvent: { continuation.yield($0) }
+                        )
+                    } catch CursorAPIError.unauthorized {
+                        await Self.accessTokenCache.invalidate(apiKey: apiKey, origin: tokenOrigin)
+                        let refreshedToken = try await Self.accessTokenCache.token(for: apiKey, origin: tokenOrigin) {
+                            try await exchangeCursorAPIKey(apiKey, settings: settings)
+                        }
+                        output = try await runSDKRequest(
+                            agentID: agentID,
+                            runID: runID,
+                            prepared: prepared,
+                            accessToken: refreshedToken,
+                            settings: settings,
+                            onEvent: { continuation.yield($0) }
+                        )
+                    }
                     continuation.yield(.done(output))
                     continuation.finish()
                 } catch {
@@ -87,6 +94,37 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
                 }
             }
         }
+    }
+
+    private func runSDKRequest(
+        agentID: String,
+        runID: String,
+        prepared: PreparedChatRequest,
+        accessToken: String,
+        settings: CursorAPISettings,
+        onEvent: @escaping @Sendable (CursorSDKStreamEvent) -> Void
+    ) async throws -> CursorSDKOutput {
+        let requestID = UUID().uuidString.lowercased()
+        let request = CursorSDKProto.runRequest(
+            agentID: agentID,
+            messageID: runID,
+            modelID: prepared.cursorModelID,
+            prompt: prepared.prompt
+        )
+        let framed = ConnectProto.frame(request)
+        let decoder = CursorSDKFrameDecoderBox()
+        _ = try await runRawSDKRequest(
+            framedBody: framed,
+            accessToken: accessToken,
+            requestID: requestID,
+            settings: settings
+        ) { payload in
+            let events = decoder.push(payload)
+            for event in events {
+                onEvent(event)
+            }
+        }
+        return decoder.output(agentID: agentID, runID: runID)
     }
 
     private func exchangeCursorAPIKey(_ apiKey: String, settings: CursorAPISettings) async throws -> String {
@@ -226,6 +264,87 @@ actor CursorSDKSessionStore {
         while sessionOrder.count > maxEntries, let evicted = sessionOrder.first {
             sessionOrder.removeFirst()
             agents.removeValue(forKey: evicted)
+        }
+    }
+}
+
+actor CursorSDKAccessTokenCache {
+    private struct Entry {
+        var token: String
+        var expiresAt: Date
+    }
+
+    private let ttl: TimeInterval
+    private let maxEntries: Int
+    private var entries: [String: Entry] = [:]
+    private var entryOrder: [String] = []
+    private var inFlight: [String: Task<String, any Error>] = [:]
+
+    init(ttl: TimeInterval, maxEntries: Int = 64) {
+        self.ttl = max(1, ttl)
+        self.maxEntries = max(1, maxEntries)
+    }
+
+    func token(
+        for apiKey: String,
+        origin: String,
+        now: Date = Date(),
+        exchange: @escaping @Sendable () async throws -> String
+    ) async throws -> String {
+        let key = cacheKey(apiKey: apiKey, origin: origin)
+        if let entry = entries[key], entry.expiresAt > now {
+            touch(key)
+            return entry.token
+        }
+
+        if let task = inFlight[key] {
+            return try await task.value
+        }
+
+        let task = Task {
+            try await exchange()
+        }
+        inFlight[key] = task
+        let token: String
+        do {
+            token = try await task.value
+        } catch {
+            inFlight.removeValue(forKey: key)
+            throw error
+        }
+        inFlight.removeValue(forKey: key)
+        entries[key] = Entry(token: token, expiresAt: now.addingTimeInterval(ttl))
+        touch(key)
+        evictIfNeeded()
+        return token
+    }
+
+    func invalidate(apiKey: String, origin: String) {
+        let key = cacheKey(apiKey: apiKey, origin: origin)
+        entries.removeValue(forKey: key)
+        inFlight.removeValue(forKey: key)?.cancel()
+        entryOrder.removeAll { $0 == key }
+    }
+
+    func count() -> Int {
+        entries.count
+    }
+
+    private func cacheKey(apiKey: String, origin: String) -> String {
+        let normalizedOrigin = origin.trimmingCharacters(in: .whitespacesAndNewlines)
+        let digest = SHA256.hash(data: Data("\(normalizedOrigin)\u{0}\(apiKey)".utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func touch(_ key: String) {
+        entryOrder.removeAll { $0 == key }
+        entryOrder.append(key)
+    }
+
+    private func evictIfNeeded() {
+        while entryOrder.count > maxEntries, let evicted = entryOrder.first {
+            entryOrder.removeFirst()
+            entries.removeValue(forKey: evicted)
         }
     }
 }
