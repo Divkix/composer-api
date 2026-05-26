@@ -187,6 +187,130 @@ bridge_count="$(bridge_process_count)"
 [ "$bridge_count" = "1" ] || fail "expected one shared SDK bridge process, found $bridge_count"
 echo "Verified direct chat, streaming chat, Responses API, and one shared SDK bridge process."
 
+if command -v pi >/dev/null 2>&1; then
+  pi_home="$(mktemp -d "${TMPDIR:-/tmp}/api-for-cursor-live-pi-home.XXXXXX")"
+  TEMP_DIRS+=("$pi_home")
+  pi_agent_dir="$pi_home/.pi/agent"
+  mkdir -p "$pi_agent_dir"
+  pi_config_file="$pi_agent_dir/models.json"
+  sed \
+    -e "s#__BASE_URL__#$base_url#g" \
+    -e "s#__API_KEY__#$CURSOR_API_TEST_KEY#g" >"$pi_config_file" <<'JSON'
+{
+  "providers": {
+    "cursorapi": {
+      "baseUrl": "__BASE_URL__",
+      "apiKey": "__API_KEY__",
+      "authHeader": true,
+      "api": "openai-completions",
+      "models": [
+        {
+          "id": "composer-2.5-fast",
+          "name": "Composer 2.5 Fast",
+          "api": "openai-completions",
+          "reasoning": false,
+          "input": ["text"],
+          "contextWindow": 200000,
+          "maxTokens": 65536,
+          "cost": { "input": 3, "output": 15, "cacheRead": 0, "cacheWrite": 0 },
+          "limit": { "context": 200000, "output": 65536 },
+          "compat": {
+            "supportsUsageInStreaming": true,
+            "maxTokensField": "max_tokens",
+            "requiresAssistantAfterToolResult": false
+          }
+        }
+      ]
+    }
+  }
+}
+JSON
+  pi_output="$(mktemp "${TMPDIR:-/tmp}/api-for-cursor-live-pi-run.XXXXXX")"
+  TEMP_FILES+=("$pi_output")
+  (
+    HOME="$pi_home" PI_CODING_AGENT_DIR="$pi_agent_dir" \
+      pi --provider cursorapi --model composer-2.5-fast --no-session -p "Reply exactly: pismoke" >"$pi_output" 2>&1
+  ) &
+  pi_pid=$!
+  deadline=$((SECONDS + TIMEOUT_SECONDS))
+  while kill -0 "$pi_pid" >/dev/null 2>&1; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      kill "$pi_pid" >/dev/null 2>&1 || true
+      wait "$pi_pid" >/dev/null 2>&1 || true
+      fail "pi live run did not finish before timeout"
+    fi
+    sleep 0.5
+  done
+  wait "$pi_pid" >/dev/null 2>&1 || true
+  cat "$pi_output"
+  grep -F "pismoke" "$pi_output" >/dev/null || fail "pi did not surface the live Composer response"
+  echo "Verified live pi response through API for Cursor."
+else
+  echo "Skipping live pi check; pi is not installed."
+fi
+
+if command -v codex >/dev/null 2>&1; then
+  codex_home="$(mktemp -d "${TMPDIR:-/tmp}/api-for-cursor-live-codex-home.XXXXXX")"
+  codex_project="$(mktemp -d "${TMPDIR:-/tmp}/api-for-cursor-live-codex-project.XXXXXX")"
+  TEMP_DIRS+=("$codex_home" "$codex_project")
+  mkdir -p "$codex_home/.codex"
+  codex_config_file="$codex_home/.codex/config.toml"
+  sed \
+    -e "s#__BASE_URL__#$base_url#g" \
+    -e "s#__API_KEY__#$CURSOR_API_TEST_KEY#g" >"$codex_config_file" <<'TOML'
+[model_providers.cursorapi]
+name = "API for Cursor"
+base_url = "__BASE_URL__"
+wire_api = "responses"
+
+[model_providers.cursorapi.auth]
+command = "/bin/echo"
+args = ["__API_KEY__"]
+refresh_interval_ms = 300000
+
+[profiles.cursorapi-fast]
+model_provider = "cursorapi"
+model = "composer-2.5-fast"
+TOML
+  codex_output="$(mktemp "${TMPDIR:-/tmp}/api-for-cursor-live-codex-run.XXXXXX")"
+  codex_last_message="$(mktemp "${TMPDIR:-/tmp}/api-for-cursor-live-codex-last-message.XXXXXX")"
+  TEMP_FILES+=("$codex_output" "$codex_last_message")
+  (
+    cd "$codex_project"
+    HOME="$codex_home" CODEX_HOME="$codex_home/.codex" \
+      codex -a never -s read-only exec \
+        --skip-git-repo-check \
+        --ignore-rules \
+        --ephemeral \
+        --profile cursorapi-fast \
+        --output-last-message "$codex_last_message" \
+        "Reply exactly: codexsmoke" >"$codex_output" 2>&1
+  ) &
+  codex_pid=$!
+  deadline=$((SECONDS + TIMEOUT_SECONDS))
+  while kill -0 "$codex_pid" >/dev/null 2>&1; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      kill "$codex_pid" >/dev/null 2>&1 || true
+      wait "$codex_pid" >/dev/null 2>&1 || true
+      fail "Codex live run did not finish before timeout"
+    fi
+    sleep 0.5
+  done
+  wait "$codex_pid" >/dev/null 2>&1 || true
+  cat "$codex_output"
+  grep -F "provider: cursorapi" "$codex_output" >/dev/null || fail "Codex did not use the cursorapi provider"
+  grep -F "model: composer-2.5-fast" "$codex_output" >/dev/null || fail "Codex did not use the Composer fast model"
+  if ! grep -F "codexsmoke" "$codex_last_message" "$codex_output" >/dev/null; then
+    fail "Codex did not surface the live Composer response"
+  fi
+  if grep -F "ERROR:" "$codex_output" >/dev/null; then
+    fail "Codex live run reported an error"
+  fi
+  echo "Verified live Codex response through API for Cursor."
+else
+  echo "Skipping live Codex check; codex is not installed."
+fi
+
 if [ "$RUN_OPENCODE" -eq 1 ]; then
   if ! command -v opencode >/dev/null 2>&1 || ! command -v tmux >/dev/null 2>&1; then
     echo "Skipping live OpenCode check; opencode or tmux is not installed."

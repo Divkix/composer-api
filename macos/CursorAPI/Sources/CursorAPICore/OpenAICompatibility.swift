@@ -561,7 +561,7 @@ public enum OpenAICompatibility {
             "tool_choice": "auto",
             "tools": [],
             "truncation": "disabled",
-            "usage": usage(promptCharacters: prepared.promptCharacters, completionCharacters: output.text.count + serializedLength(toolCallItems)),
+            "usage": responsesUsage(promptCharacters: prepared.promptCharacters, outputCharacters: output.text.count + serializedLength(toolCallItems)),
             "user": NSNull(),
             "metadata": [:],
             "cursor_agent_id": output.agentID,
@@ -1407,6 +1407,20 @@ public enum OpenAICompatibility {
             "prompt_tokens": promptTokens,
             "completion_tokens": completionTokens,
             "total_tokens": promptTokens + completionTokens
+        ]
+    }
+
+    private static func responsesUsage(promptCharacters: Int, outputCharacters: Int) -> [String: Any] {
+        let inputTokens = inputTokenEstimate(characters: promptCharacters)
+        let outputTokens = max(0, Int(ceil(Double(outputCharacters) / 4.0)))
+        return [
+            "input_tokens": inputTokens,
+            "input_tokens_details": ["cached_tokens": 0],
+            "output_tokens": outputTokens,
+            "output_tokens_details": ["reasoning_tokens": 0],
+            "total_tokens": inputTokens + outputTokens,
+            "prompt_tokens": inputTokens,
+            "completion_tokens": outputTokens
         ]
     }
 

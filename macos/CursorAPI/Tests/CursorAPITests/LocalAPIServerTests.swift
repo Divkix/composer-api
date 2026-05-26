@@ -731,6 +731,12 @@ final class LocalAPIServerTests: XCTestCase {
         let text = String(data: data, encoding: .utf8) ?? ""
         XCTAssertTrue(text.contains("\"object\" : \"response\""))
         XCTAssertTrue(text.contains("ok"))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let usage = try XCTUnwrap(object["usage"] as? [String: Any])
+        XCTAssertGreaterThan((usage["input_tokens"] as? NSNumber)?.intValue ?? 0, 0)
+        XCTAssertGreaterThanOrEqual((usage["output_tokens"] as? NSNumber)?.intValue ?? -1, 0)
+        XCTAssertNotNil(usage["input_tokens_details"])
+        XCTAssertNotNil(usage["output_tokens_details"])
     }
 
     func testResponsesEndpointAcceptsOriginBaseURLForStorageAndRetrieval() async throws {
@@ -1638,6 +1644,10 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertTrue(text.contains("event: response.output_text.delta"))
         XCTAssertTrue(text.contains("event: response.output_text.done"))
         XCTAssertTrue(text.contains("event: response.completed"))
+        XCTAssertTrue(text.contains(#""input_tokens":"#))
+        XCTAssertTrue(text.contains(#""output_tokens":"#))
+        XCTAssertTrue(text.contains(#""input_tokens_details":"#))
+        XCTAssertTrue(text.contains(#""output_tokens_details":"#))
     }
 
     func testResponsesStreamingEmitsFunctionCallEvents() async throws {
