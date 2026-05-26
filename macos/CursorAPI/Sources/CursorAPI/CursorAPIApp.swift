@@ -16,6 +16,7 @@ final class CursorAPIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDeleg
         retainedDelegate = delegate
         app.delegate = delegate
         app.setActivationPolicy(.regular)
+        delegate.installApplicationIcon()
         delegate.installMainMenu()
         app.finishLaunching()
         DispatchQueue.main.async {
@@ -38,6 +39,14 @@ final class CursorAPIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDeleg
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    private func installApplicationIcon() {
+        guard let iconURL = Bundle.main.url(forResource: "APIForCursor", withExtension: "icns"),
+              let icon = NSImage(contentsOf: iconURL) else {
+            return
+        }
+        NSApplication.shared.applicationIconImage = icon
     }
 
     private func revealMainWindow() {

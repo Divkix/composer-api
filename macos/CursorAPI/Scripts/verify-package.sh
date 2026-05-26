@@ -40,6 +40,65 @@ plist_has_nonempty_value() {
 
 [ -x "$MACOS_DIR/$APP_NAME" ] || fail "main executable is missing or not executable"
 [ -s "$RESOURCES_DIR/APIForCursor.icns" ] || fail "app icon is missing"
+swift - "$RESOURCES_DIR/APIForCursor.icns" <<'SWIFT' || fail "app icon does not contain the bridge artwork"
+import AppKit
+import Foundation
+
+let iconURL = URL(fileURLWithPath: CommandLine.arguments[1])
+guard let image = NSImage(contentsOf: iconURL),
+      let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+    exit(1)
+}
+
+let width = cgImage.width
+let height = cgImage.height
+guard width >= 1024, height >= 1024 else {
+    exit(1)
+}
+
+var pixels = [UInt8](repeating: 0, count: width * height * 4)
+guard let context = CGContext(
+    data: &pixels,
+    width: width,
+    height: height,
+    bitsPerComponent: 8,
+    bytesPerRow: width * 4,
+    space: CGColorSpaceCreateDeviceRGB(),
+    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+) else {
+    exit(1)
+}
+
+context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+var visiblePixels = 0
+var bridgeBluePixels = 0
+var brightBridgePixels = 0
+
+for offset in stride(from: 0, to: pixels.count, by: 4) {
+    let red = Int(pixels[offset])
+    let green = Int(pixels[offset + 1])
+    let blue = Int(pixels[offset + 2])
+    let alpha = Int(pixels[offset + 3])
+
+    guard alpha > 32 else { continue }
+    visiblePixels += 1
+
+    if blue > 150, green > 80, red < 80 {
+        bridgeBluePixels += 1
+    }
+    if red > 220, green > 220, blue > 220 {
+        brightBridgePixels += 1
+    }
+}
+
+let totalPixels = width * height
+guard visiblePixels > totalPixels * 7 / 10,
+      bridgeBluePixels > totalPixels / 15,
+      brightBridgePixels > totalPixels / 10 else {
+    exit(1)
+}
+SWIFT
 [ -d "$BUNDLE_DIR" ] || fail "resource bundle is missing"
 
 for resource in \
