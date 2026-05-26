@@ -99,6 +99,7 @@ final class CursorAPIAppModel: ObservableObject {
             isRunning = true
             updateStatusText()
             if activePort != requestedPort {
+                store.save(settings)
                 statusText = "Port \(requestedPort) was busy; listening on \(baseURL)"
                 refreshIntegrations()
             }
