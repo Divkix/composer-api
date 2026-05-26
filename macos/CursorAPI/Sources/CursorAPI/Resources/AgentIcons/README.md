@@ -8,4 +8,5 @@ Integration icons are bundled so API for Cursor can render them offline.
 - `pi.png`: pi.dev favicon
 - `continue.png`: Continue extension icon from `continuedev/continue`
 - `aider.png`: Aider web app icon from `Aider-AI/aider`
+- `roo.png`: Roo Code extension icon from `RooCodeInc/Roo-Code`
 - `../cursor-logo.png`: Cursor logo from the repository's public Cursor asset

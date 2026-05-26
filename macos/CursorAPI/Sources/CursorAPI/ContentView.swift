@@ -1183,6 +1183,8 @@ private extension AgentIntegrationID {
             return "continue"
         case .aider:
             return "aider"
+        case .roo:
+            return "roo"
         }
     }
 

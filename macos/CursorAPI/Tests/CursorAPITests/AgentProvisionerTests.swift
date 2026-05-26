@@ -372,6 +372,60 @@ final class AgentProvisionerTests: XCTestCase {
         XCTAssertTrue(provisioner.status(for: .vscode, settings: settings).installed)
     }
 
+    func testInstallsRooCodeAutoImportProfile() throws {
+        let home = try temporaryHome()
+        let provisioner = AgentProvisioner(homeDirectory: home)
+        let settings = CursorAPISettings(port: 8787)
+        let vscodeSettings = home.appending(path: "Library/Application Support/Code/User/settings.json")
+        try FileManager.default.createDirectory(at: vscodeSettings.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try """
+        {
+          "editor.fontSize": 14,
+          "roo-cline.autoImportSettingsPath": "/old/roo-code-settings.json"
+        }
+        """.write(to: vscodeSettings, atomically: true, encoding: .utf8)
+
+        try provisioner.install(.roo, settings: settings)
+        try provisioner.install(.roo, settings: settings)
+
+        let importConfig = home.appending(path: ".config/api-for-cursor/roo-code-settings.json")
+        let importText = try String(contentsOf: importConfig, encoding: .utf8)
+        XCTAssertTrue(importText.contains("\"providerProfiles\""))
+        XCTAssertTrue(importText.contains("\"currentApiConfigName\" : \"\(CursorAPIBrand.displayName)\""))
+        XCTAssertTrue(importText.contains("\"apiProvider\" : \"openai\""))
+        XCTAssertTrue(importText.contains("\"openAiBaseUrl\" : \"http://127.0.0.1:8787/v1\""))
+        XCTAssertTrue(importText.contains("\"openAiApiKey\" : \"cursor-local\""))
+        XCTAssertTrue(importText.contains("\"openAiModelId\" : \"composer-2.5\""))
+        XCTAssertTrue(importText.contains("\"openAiModelId\" : \"composer-2.5-fast\""))
+        XCTAssertTrue(importText.contains("\"openAiCustomModelInfo\""))
+        XCTAssertTrue(importText.contains("\"modeApiConfigs\""))
+        XCTAssertTrue(importText.contains("\"ask\" : \"api-for-cursor-composer-fast\""))
+
+        let root = try readJSONObject(importConfig)
+        let providerProfiles = try XCTUnwrap(root["providerProfiles"] as? [String: Any])
+        let apiConfigs = try XCTUnwrap(providerProfiles["apiConfigs"] as? [String: Any])
+        let primary = try XCTUnwrap(apiConfigs[CursorAPIBrand.displayName] as? [String: Any])
+        let fast = try XCTUnwrap(apiConfigs["\(CursorAPIBrand.displayName) Fast"] as? [String: Any])
+        let primaryInfo = try XCTUnwrap(primary["openAiCustomModelInfo"] as? [String: Any])
+        let fastInfo = try XCTUnwrap(fast["openAiCustomModelInfo"] as? [String: Any])
+        XCTAssertEqual(primary["id"] as? String, "api-for-cursor-composer")
+        XCTAssertEqual(fast["id"] as? String, "api-for-cursor-composer-fast")
+        XCTAssertEqual((primaryInfo["contextWindow"] as? NSNumber)?.intValue, 200_000)
+        XCTAssertEqual((primaryInfo["maxTokens"] as? NSNumber)?.intValue, 65_536)
+        XCTAssertEqual((primaryInfo["inputPrice"] as? NSNumber)?.doubleValue, 0.5)
+        XCTAssertEqual((fastInfo["outputPrice"] as? NSNumber)?.doubleValue, 15.0)
+
+        let settingsRoot = try readJSONObject(vscodeSettings)
+        XCTAssertEqual((settingsRoot["editor.fontSize"] as? NSNumber)?.intValue, 14)
+        XCTAssertEqual(settingsRoot["roo-cline.autoImportSettingsPath"] as? String, importConfig.path)
+        XCTAssertEqual(countOccurrences(of: "roo-cline.autoImportSettingsPath", in: try String(contentsOf: vscodeSettings, encoding: .utf8)), 1)
+        XCTAssertTrue(provisioner.status(for: .roo, settings: settings).installed)
+
+        let backups = try FileManager.default.contentsOfDirectory(at: vscodeSettings.deletingLastPathComponent(), includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix("settings.json.api-for-cursor-backup.") }
+        XCTAssertEqual(backups.count, 1)
+    }
+
     func testVSCodeInstallTargetsExistingCodeFamilyUserData() throws {
         let home = try temporaryHome()
         let provisioner = AgentProvisioner(homeDirectory: home)
@@ -474,6 +528,7 @@ final class AgentProvisionerTests: XCTestCase {
         let pi = try String(contentsOf: home.appending(path: ".pi/agent/models.json"), encoding: .utf8)
         let continueConfig = try String(contentsOf: home.appending(path: ".continue/config.yaml"), encoding: .utf8)
         let aiderConfig = try String(contentsOf: home.appending(path: ".aider.conf.yml"), encoding: .utf8)
+        let rooConfig = try String(contentsOf: home.appending(path: ".config/api-for-cursor/roo-code-settings.json"), encoding: .utf8)
 
         XCTAssertEqual(countOccurrences(of: "\"cursorapi\"", in: opencode), 1)
         XCTAssertEqual(countOccurrences(of: "[model_providers.cursorapi]", in: codex), 1)
@@ -481,7 +536,8 @@ final class AgentProvisionerTests: XCTestCase {
         XCTAssertEqual(countOccurrences(of: "\"cursorapi\"", in: pi), 1)
         XCTAssertEqual(countOccurrences(of: "# api-for-cursor-start", in: continueConfig), 1)
         XCTAssertEqual(countOccurrences(of: "# api-for-cursor-aider-start", in: aiderConfig), 1)
-        for currentConfig in [opencode, codex, kilo, pi, continueConfig, aiderConfig] {
+        XCTAssertTrue(rooConfig.contains("\"api-for-cursor-composer-fast\""))
+        for currentConfig in [opencode, codex, kilo, pi, continueConfig, aiderConfig, rooConfig] {
             XCTAssertFalse(currentConfig.contains("http://127.0.0.1:8787/v1"))
             XCTAssertTrue(currentConfig.contains("http://127.0.0.1:9999/v1"))
         }
@@ -501,6 +557,7 @@ final class AgentProvisionerTests: XCTestCase {
         try provisioner.install(.pi, settings: original)
         try provisioner.install(.continueDev, settings: original)
         try provisioner.install(.aider, settings: original)
+        try provisioner.install(.roo, settings: original)
 
         for id in AgentIntegrationID.allCases {
             let status = provisioner.status(for: id, settings: moved)
@@ -520,7 +577,7 @@ final class AgentProvisionerTests: XCTestCase {
         let provisioner = AgentProvisioner(homeDirectory: home)
         let settings = CursorAPISettings(port: 8787)
 
-        for id in [AgentIntegrationID.opencode, .cline, .kilo, .pi] {
+        for id in [AgentIntegrationID.opencode, .cline, .kilo, .pi, .roo] {
             try provisioner.install(id, settings: settings)
             XCTAssertTrue(provisioner.status(for: id, settings: settings).installed)
         }
@@ -529,13 +586,14 @@ final class AgentProvisionerTests: XCTestCase {
             home.appending(path: ".config/opencode/opencode.json"),
             home.appending(path: ".cline/data/globalState.json"),
             home.appending(path: ".config/kilo/kilo.jsonc"),
-            home.appending(path: ".pi/agent/models.json")
+            home.appending(path: ".pi/agent/models.json"),
+            home.appending(path: ".config/api-for-cursor/roo-code-settings.json")
         ]
         for url in metadataFiles {
             try replaceText(in: url, matching: "65536", with: "16384")
         }
 
-        for id in [AgentIntegrationID.opencode, .cline, .kilo, .pi] {
+        for id in [AgentIntegrationID.opencode, .cline, .kilo, .pi, .roo] {
             let status = provisioner.status(for: id, settings: settings)
             XCTAssertFalse(status.installed, "\(id.displayName) should require current model limits")
             XCTAssertTrue(status.detail.contains("update"), "\(id.displayName) should explain stale metadata")

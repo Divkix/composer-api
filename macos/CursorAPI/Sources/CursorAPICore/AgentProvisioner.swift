@@ -8,6 +8,10 @@ public final class AgentProvisioner: @unchecked Sendable {
     private static let aiderBlockEnd = "# api-for-cursor-aider-end"
     private static let aiderSettingsBlockStart = "# api-for-cursor-aider-model-settings-start"
     private static let aiderSettingsBlockEnd = "# api-for-cursor-aider-model-settings-end"
+    private static let rooProfileName = CursorAPIBrand.displayName
+    private static let rooFastProfileName = "\(CursorAPIBrand.displayName) Fast"
+    private static let rooProfileID = "api-for-cursor-composer"
+    private static let rooFastProfileID = "api-for-cursor-composer-fast"
 
     private let homeDirectory: URL
     private let fileManager: FileManager
@@ -45,6 +49,8 @@ public final class AgentProvisioner: @unchecked Sendable {
             return continueStatus(settings: settings)
         case .aider:
             return aiderStatus(settings: settings)
+        case .roo:
+            return rooStatus(settings: settings)
         }
     }
 
@@ -66,6 +72,8 @@ public final class AgentProvisioner: @unchecked Sendable {
             try installContinue(settings: settings)
         case .aider:
             try installAider(settings: settings)
+        case .roo:
+            try installRoo(settings: settings)
         }
     }
 
@@ -239,6 +247,28 @@ public final class AgentProvisioner: @unchecked Sendable {
         return AgentIntegrationStatus(id: .aider, installed: installed, configPath: url.path, detail: detail)
     }
 
+    private func rooStatus(settings: CursorAPISettings) -> AgentIntegrationStatus {
+        let importURL = rooImportSettingsURL()
+        let settingsURL = rooAutoImportSettingsURL() ?? selectedVSCodeProfile().settingsURL(homeDirectory: homeDirectory)
+        let importMatches = rooImportSettingsMatches(settings: settings)
+        let autoImportMatches = rooAutoImportSettingsURL() != nil
+
+        if importMatches && autoImportMatches {
+            return AgentIntegrationStatus(id: .roo, installed: true, configPath: importURL.path, detail: "Auto-import profile installed")
+        }
+
+        let text = fileText(importURL) + "\n" + vscodeSettingsURLs().map(fileText).joined(separator: "\n")
+        let detail: String
+        if !fileManager.fileExists(atPath: importURL.path) {
+            detail = "Roo Code auto-import profile not found"
+        } else if importMatches {
+            detail = "Roo Code auto-import setting not configured"
+        } else {
+            detail = providerStatusDetail(text: text, settings: settings)
+        }
+        return AgentIntegrationStatus(id: .roo, installed: false, configPath: settingsURL.path, detail: detail)
+    }
+
     private func codexConfigMatches(_ text: String, settings: CursorAPISettings) -> Bool {
         text.contains("[model_providers.cursorapi]")
             && text.contains("name = \"\(CursorAPIBrand.displayName)\"")
@@ -385,6 +415,47 @@ public final class AgentProvisioner: @unchecked Sendable {
                     && text.contains("use_repo_map: true")
                     && text.contains("use_temperature: false")
             }
+    }
+
+    private func rooImportSettingsMatches(settings: CursorAPISettings) -> Bool {
+        let url = rooImportSettingsURL()
+        guard fileManager.fileExists(atPath: url.path),
+              let root = try? readJSONObject(url, defaultValue: [:]),
+              let providerProfiles = root["providerProfiles"] as? [String: Any],
+              stringValue(providerProfiles["currentApiConfigName"]) == Self.rooProfileName,
+              let apiConfigs = providerProfiles["apiConfigs"] as? [String: Any],
+              let primary = apiConfigs[Self.rooProfileName] as? [String: Any],
+              let fast = apiConfigs[Self.rooFastProfileName] as? [String: Any],
+              let modeApiConfigs = providerProfiles["modeApiConfigs"] as? [String: Any] else {
+            return false
+        }
+
+        let primaryModel = ComposerModels.all[0]
+        let fastModel = ComposerModels.all[1]
+        return rooProfileMatches(primary, model: primaryModel, id: Self.rooProfileID, settings: settings)
+            && rooProfileMatches(fast, model: fastModel, id: Self.rooFastProfileID, settings: settings)
+            && stringValue(modeApiConfigs["architect"]) == Self.rooProfileID
+            && stringValue(modeApiConfigs["code"]) == Self.rooProfileID
+            && stringValue(modeApiConfigs["ask"]) == Self.rooFastProfileID
+            && stringValue(modeApiConfigs["debug"]) == Self.rooProfileID
+            && stringValue(modeApiConfigs["orchestrator"]) == Self.rooProfileID
+    }
+
+    private func rooProfileMatches(_ profile: [String: Any], model: ComposerModel, id: String, settings: CursorAPISettings) -> Bool {
+        guard stringValue(profile["id"]) == id,
+              stringValue(profile["apiProvider"]) == "openai",
+              stringValue(profile["openAiBaseUrl"]) == settings.baseURL.absoluteString,
+              stringValue(profile["openAiApiKey"]) == "cursor-local",
+              stringValue(profile["openAiModelId"]) == model.id,
+              boolValue(profile["openAiStreamingEnabled"]) == true,
+              boolValue(profile["includeMaxTokens"]) == true,
+              boolValue(profile["todoListEnabled"]) == true,
+              intValue(profile["modelMaxTokens"]) == model.outputLimit,
+              intValue(profile["consecutiveMistakeLimit"]) == 3,
+              let info = profile["openAiCustomModelInfo"] as? [String: Any] else {
+            return false
+        }
+        return rooModelInfoMatches(info, model: model)
     }
 
     private func installCline(settings: CursorAPISettings) throws {
@@ -550,6 +621,15 @@ public final class AgentProvisioner: @unchecked Sendable {
         try writeText(text, to: url)
     }
 
+    private func installRoo(settings: CursorAPISettings) throws {
+        try writeJSONObject(rooImportSettings(settings: settings), to: rooImportSettingsURL())
+
+        let settingsURL = rooAutoImportSettingsURL() ?? selectedVSCodeProfile().settingsURL(homeDirectory: homeDirectory)
+        var vscodeSettings = try readJSONObject(settingsURL, defaultValue: [:])
+        vscodeSettings["roo-cline.autoImportSettingsPath"] = rooImportSettingsURL().path
+        try writeJSONObject(vscodeSettings, to: settingsURL)
+    }
+
     private func opencodeConfigURL() -> URL {
         configHomeDirectory().appending(path: "opencode/opencode.json")
     }
@@ -566,9 +646,26 @@ public final class AgentProvisioner: @unchecked Sendable {
         vscodeProfiles().map { $0.languageModelsURL(homeDirectory: homeDirectory) }
     }
 
+    private func vscodeSettingsURLs() -> [URL] {
+        vscodeProfiles().map { $0.settingsURL(homeDirectory: homeDirectory) }
+    }
+
+    private func rooAutoImportSettingsURL() -> URL? {
+        vscodeSettingsURLs().first { url in
+            guard fileManager.fileExists(atPath: url.path),
+                  let settings = try? readJSONObject(url, defaultValue: [:]) else {
+                return false
+            }
+            return stringValue(settings["roo-cline.autoImportSettingsPath"]) == rooImportSettingsURL().path
+        }
+    }
+
     private func selectedVSCodeProfile() -> VSCodeUserDataProfile {
         let profiles = vscodeProfiles()
         if let profile = profiles.first(where: { fileManager.fileExists(atPath: $0.languageModelsURL(homeDirectory: homeDirectory).path) }) {
+            return profile
+        }
+        if let profile = profiles.first(where: { fileManager.fileExists(atPath: $0.settingsURL(homeDirectory: homeDirectory).path) }) {
             return profile
         }
         if let profile = profiles.first(where: { fileManager.fileExists(atPath: $0.userDirectory(homeDirectory: homeDirectory).path) }) {
@@ -620,6 +717,10 @@ public final class AgentProvisioner: @unchecked Sendable {
 
     private func aiderModelSettingsURL() -> URL {
         homeDirectory.appending(path: ".aider.model.settings.yml")
+    }
+
+    private func rooImportSettingsURL() -> URL {
+        configHomeDirectory().appending(path: "api-for-cursor/roo-code-settings.json")
     }
 
     private func configHomeDirectory() -> URL {
@@ -730,6 +831,72 @@ public final class AgentProvisioner: @unchecked Sendable {
         }
         lines.append(Self.aiderSettingsBlockEnd)
         return lines.joined(separator: "\n")
+    }
+
+    private func rooImportSettings(settings: CursorAPISettings) -> [String: Any] {
+        let primaryModel = ComposerModels.all[0]
+        let fastModel = ComposerModels.all[1]
+        return [
+            "providerProfiles": [
+                "currentApiConfigName": Self.rooProfileName,
+                "apiConfigs": [
+                    Self.rooProfileName: rooProfile(for: primaryModel, id: Self.rooProfileID, settings: settings),
+                    Self.rooFastProfileName: rooProfile(for: fastModel, id: Self.rooFastProfileID, settings: settings)
+                ],
+                "modeApiConfigs": [
+                    "architect": Self.rooProfileID,
+                    "code": Self.rooProfileID,
+                    "ask": Self.rooFastProfileID,
+                    "debug": Self.rooProfileID,
+                    "orchestrator": Self.rooProfileID
+                ]
+            ],
+            "globalSettings": [
+                "mode": "code"
+            ]
+        ]
+    }
+
+    private func rooProfile(for model: ComposerModel, id: String, settings: CursorAPISettings) -> [String: Any] {
+        [
+            "id": id,
+            "apiProvider": "openai",
+            "openAiBaseUrl": settings.baseURL.absoluteString,
+            "openAiApiKey": "cursor-local",
+            "openAiModelId": model.id,
+            "openAiStreamingEnabled": true,
+            "includeMaxTokens": true,
+            "modelMaxTokens": model.outputLimit,
+            "consecutiveMistakeLimit": 3,
+            "todoListEnabled": true,
+            "openAiCustomModelInfo": rooModelInfo(for: model)
+        ]
+    }
+
+    private func rooModelInfo(for model: ComposerModel) -> [String: Any] {
+        [
+            "maxTokens": model.outputLimit,
+            "contextWindow": model.contextWindow,
+            "supportsImages": true,
+            "supportsPromptCache": false,
+            "supportsTools": true,
+            "supportsStreaming": true,
+            "supportsTemperature": false,
+            "inputPrice": model.inputCost,
+            "outputPrice": model.outputCost
+        ]
+    }
+
+    private func rooModelInfoMatches(_ info: [String: Any], model: ComposerModel) -> Bool {
+        intValue(info["maxTokens"]) == model.outputLimit
+            && intValue(info["contextWindow"]) == model.contextWindow
+            && boolValue(info["supportsImages"]) == true
+            && boolValue(info["supportsPromptCache"]) == false
+            && boolValue(info["supportsTools"]) == true
+            && boolValue(info["supportsStreaming"]) == true
+            && boolValue(info["supportsTemperature"]) == false
+            && doubleValue(info["inputPrice"]) == model.inputCost
+            && doubleValue(info["outputPrice"]) == model.outputCost
     }
 
     private func removeMarkedContinueBlock(from text: String) -> String {
@@ -960,6 +1127,11 @@ public final class AgentProvisioner: @unchecked Sendable {
                 base.appending(path: "kilocode.kilo-code"),
                 base.appending(path: "kilocode.kilo")
             ]
+        case .roo:
+            return [
+                base.appending(path: "rooveterinaryinc.roo-cline"),
+                base.appending(path: "roo-cline.roo-cline")
+            ]
         default:
             return []
         }
@@ -1141,5 +1313,9 @@ private struct VSCodeUserDataProfile {
 
     func languageModelsURL(homeDirectory: URL) -> URL {
         userDirectory(homeDirectory: homeDirectory).appending(path: "chatLanguageModels.json")
+    }
+
+    func settingsURL(homeDirectory: URL) -> URL {
+        userDirectory(homeDirectory: homeDirectory).appending(path: "settings.json")
     }
 }

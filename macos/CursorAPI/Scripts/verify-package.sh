@@ -51,7 +51,8 @@ for resource in \
   kilo.png kilo-dark.png \
   pi.png pi-dark.png \
   continue.png continue-dark.png \
-  aider.png aider-dark.png
+  aider.png aider-dark.png \
+  roo.png roo-dark.png
 do
   [ -s "$BUNDLE_DIR/$resource" ] || fail "resource bundle is missing $resource"
 done
