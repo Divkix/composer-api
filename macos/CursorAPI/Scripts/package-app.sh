@@ -28,10 +28,10 @@ while [ "$#" -gt 0 ]; do
       cat <<USAGE
 Usage: $0 [--development|--release]
 
-  --development  Build a local development app. Missing bundled routing defaults
-                 are allowed and the app will show Routing Missing. This is the
+  --development  Build a local development app. Missing bundled transport defaults
+                 are allowed and the app will show Build Incomplete. This is the
                  default.
-  --release      Refuse to package unless complete bundled Composer routing
+  --release      Refuse to package unless complete bundled Composer transport
                  defaults are available from local environment files or the
                  current environment.
 USAGE
@@ -98,6 +98,56 @@ func loadEnvironmentFile(_ url: URL) -> [String: String] {
     return values
 }
 
+func firstRegexCapture(_ pattern: String, in text: String, startingAt startOffset: Int = 0) -> String? {
+    guard startOffset >= 0, startOffset < text.utf16.count,
+          let regex = try? NSRegularExpression(pattern: pattern) else {
+        return nil
+    }
+    let range = NSRange(location: startOffset, length: text.utf16.count - startOffset)
+    guard let match = regex.firstMatch(in: text, range: range),
+          match.numberOfRanges > 1,
+          let captureRange = Range(match.range(at: 1), in: text) else {
+        return nil
+    }
+    return String(text[captureRange])
+}
+
+func inferSDKTransportDefaults(repositoryDirectory: URL) -> [String: String] {
+    let sdkBundleCandidates = [
+        repositoryDirectory.appendingPathComponent("node_modules/@cursor/sdk/dist/esm/index.js"),
+        repositoryDirectory.appendingPathComponent("node_modules/@cursor/sdk/dist/cjs/index.js")
+    ]
+    guard let bundleURL = sdkBundleCandidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }),
+          let bundleText = try? String(contentsOf: bundleURL, encoding: .utf8) else {
+        return [:]
+    }
+
+    var values: [String: String] = [:]
+    if let backend = firstRegexCapture(#"CURSOR_BACKEND_URL[^"']{0,240}["'](https?://[^"']+)["']"#, in: bundleText) {
+        values["backendBaseURL"] = backend
+        values["cursorAPIBaseURL"] = backend
+    }
+
+    if let serviceOffset = bundleText.range(of: "AgentService")?.lowerBound {
+        let startOffset = NSRange(serviceOffset..<bundleText.endIndex, in: bundleText).location
+        let service = firstRegexCapture(#"AgentService\s*=\s*\{typeName:"([^"]+)""#, in: bundleText, startingAt: startOffset)
+        let method = firstRegexCapture(#"AgentService\s*=\s*\{typeName:"[^"]+",methods:\{run:\{name:"([^"]+)""#, in: bundleText, startingAt: startOffset)
+        if let service, let method {
+            values["localAgentEndpoint"] = "/\(service)/\(method)"
+        }
+    }
+
+    let packageURL = repositoryDirectory.appendingPathComponent("node_modules/@cursor/sdk/package.json")
+    if let data = try? Data(contentsOf: packageURL),
+       let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+       let version = object["version"] as? String,
+       !version.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        values["clientVersion"] = "sdk-\(version.trimmingCharacters(in: .whitespacesAndNewlines))"
+    }
+
+    return values
+}
+
 let localEnvironmentFiles = [
     repositoryDirectory.appendingPathComponent(".dev.vars"),
     repositoryDirectory.appendingPathComponent(".env.local"),
@@ -126,6 +176,15 @@ for (environmentKey, plistKey) in mappings {
     defaults[plistKey] = value
 }
 
+let inferredDefaults = inferSDKTransportDefaults(repositoryDirectory: repositoryDirectory)
+var usedInferredDefaults = false
+for key in ["backendBaseURL", "cursorAPIBaseURL", "localAgentEndpoint", "clientVersion"] {
+    if defaults[key] == nil, let value = inferredDefaults[key] {
+        defaults[key] = value
+        usedInferredDefaults = true
+    }
+}
+
 let requiredKeys = ["cursorAPIBaseURL", "backendBaseURL", "localAgentEndpoint"]
 let missingKeys = requiredKeys.filter { defaults[$0] == nil }
 let hasCompleteRouting = missingKeys.isEmpty
@@ -135,15 +194,15 @@ if hasCompleteRouting {
         FileHandle.standardError.write(Data("Could not write bundled Composer routing defaults.\n".utf8))
         exit(1)
     }
-    print("Embedded bundled Composer routing defaults.")
+    print(usedInferredDefaults ? "Embedded bundled Composer transport defaults from installed SDK metadata." : "Embedded bundled Composer transport defaults.")
 } else {
-    let message = "No complete bundled Composer routing defaults found; missing \(missingKeys.joined(separator: ", "))."
+    let message = "No complete bundled Composer transport defaults found; missing \(missingKeys.joined(separator: ", "))."
     let required = ["1", "true", "yes"].contains((environment["CURSOR_API_REQUIRE_BUNDLED_TRANSPORT"] ?? "").lowercased())
     if required {
         FileHandle.standardError.write(Data("\(message) Refusing release package.\n".utf8))
         exit(2)
     }
-    print("\(message) This build will show Routing Missing.")
+    print("\(message) This build will show Build Incomplete.")
 }
 SWIFT
 mkdir -p "$ICONSET_DIR"
