@@ -134,6 +134,11 @@ public final class LocalAPIServer: @unchecked Sendable {
             if request.method == "OPTIONS" {
                 return .response(HTTPResponse(status: 204, headers: corsHeaders(), body: Data()))
             }
+            if request.method == "GET", path == "/" || path == "/v1" {
+                let settings = settingsProvider()
+                let responseState = await responseSessions.stats()
+                return try .response(withCORS(HTTPResponse.json(serviceObject(settings: settings, responseState: responseState))))
+            }
             if request.method == "GET", path == "/health" {
                 let settings = settingsProvider()
                 let responseState = await responseSessions.stats()
@@ -605,6 +610,32 @@ public final class LocalAPIServer: @unchecked Sendable {
             ?? request.header("x-project-path")?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty
             ?? request.header("x-workspace-path")?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty
             ?? request.header("x-working-directory")?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty
+    }
+
+    private func serviceObject(settings: CursorAPISettings, responseState: LocalResponseSessionStore.Stats) -> [String: Any] {
+        let health = healthObject(settings: settings, responseState: responseState)
+        return [
+            "object": "api.service",
+            "service": CursorAPIBrand.displayName,
+            "baseUrl": settings.baseURL.absoluteString,
+            "status": health["status"] ?? "unknown",
+            "ready": health["ready"] ?? false,
+            "models": ComposerModels.all.map(\.id),
+            "endpoints": [
+                "models": "/v1/models",
+                "chat_completions": "/v1/chat/completions",
+                "responses": "/v1/responses",
+                "completions": "/v1/completions",
+                "health": "/health"
+            ],
+            "features": [
+                "chat_completions": true,
+                "responses": true,
+                "stateful_responses": true,
+                "streaming": true,
+                "tool_calls": true
+            ]
+        ]
     }
 
     private func healthObject(settings: CursorAPISettings, responseState: LocalResponseSessionStore.Stats) -> [String: Any] {

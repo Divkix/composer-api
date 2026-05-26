@@ -120,6 +120,46 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual(object["missing"] as? [String], [])
     }
 
+    func testRootEndpointReportsLocalOpenAICompatibilityMetadata() async throws {
+        let port = try unusedTCPPort()
+        let settings = CursorAPISettings(
+            port: port,
+            cursorAPIKey: "crsr_test",
+            cursorAPIBaseURL: "https://exchange.example",
+            backendBaseURL: "https://private-backend.example",
+            localAgentEndpoint: "/private/sdk/run"
+        )
+        let server = LocalAPIServer(settingsProvider: { settings }, harness: MockHarness())
+        try server.start(port: port)
+        defer { server.stop() }
+        try await Task.sleep(nanoseconds: 150_000_000)
+
+        for path in ["/", "/v1"] {
+            let (data, response) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(port)\(path)")!)
+            XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200, path)
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any], path)
+            let endpoints = try XCTUnwrap(object["endpoints"] as? [String: String], path)
+            let features = try XCTUnwrap(object["features"] as? [String: Bool], path)
+            let text = String(data: data, encoding: .utf8) ?? ""
+
+            XCTAssertEqual(object["object"] as? String, "api.service", path)
+            XCTAssertEqual(object["service"] as? String, CursorAPIBrand.displayName, path)
+            XCTAssertEqual(object["baseUrl"] as? String, "http://127.0.0.1:\(port)/v1", path)
+            XCTAssertEqual(object["ready"] as? Bool, true, path)
+            XCTAssertEqual(object["status"] as? String, "ready", path)
+            XCTAssertEqual(object["models"] as? [String], ["composer-2.5", "composer-2.5-fast"], path)
+            XCTAssertEqual(endpoints["models"], "/v1/models", path)
+            XCTAssertEqual(endpoints["chat_completions"], "/v1/chat/completions", path)
+            XCTAssertEqual(endpoints["responses"], "/v1/responses", path)
+            XCTAssertEqual(features["stateful_responses"], true, path)
+            XCTAssertEqual(features["tool_calls"], true, path)
+            XCTAssertFalse(text.contains("crsr_test"), path)
+            XCTAssertFalse(text.contains("exchange.example"), path)
+            XCTAssertFalse(text.contains("private-backend.example"), path)
+            XCTAssertFalse(text.contains("/private/sdk/run"), path)
+        }
+    }
+
     func testStartFailsWhenPortIsAlreadyInUse() throws {
         let port = try unusedTCPPort()
         let first = LocalAPIServer(settingsProvider: { CursorAPISettings(port: port) }, harness: MockHarness())
