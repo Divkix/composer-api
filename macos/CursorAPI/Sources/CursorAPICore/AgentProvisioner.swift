@@ -1,6 +1,8 @@
 import Foundation
 
 public final class AgentProvisioner: @unchecked Sendable {
+    private static let backupMarker = "api-for-cursor-backup"
+
     private let homeDirectory: URL
     private let fileManager: FileManager
     private let environment: [String: String]
@@ -652,7 +654,7 @@ public final class AgentProvisioner: @unchecked Sendable {
     private func backupURL(for url: URL) -> URL {
         let stamp = String(Int(Date().timeIntervalSince1970 * 1000))
         let parent = url.deletingLastPathComponent()
-        let baseName = "\(url.lastPathComponent).cursorapi-backup.\(stamp)"
+        let baseName = "\(url.lastPathComponent).\(Self.backupMarker).\(stamp)"
         var candidate = parent.appending(path: baseName)
         var index = 2
         while fileManager.fileExists(atPath: candidate.path) {

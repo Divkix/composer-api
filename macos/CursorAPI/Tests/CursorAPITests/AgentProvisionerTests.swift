@@ -209,7 +209,7 @@ final class AgentProvisionerTests: XCTestCase {
         XCTAssertTrue(text.contains("cursor-local"))
 
         let backups = try FileManager.default.contentsOfDirectory(at: config.deletingLastPathComponent(), includingPropertiesForKeys: nil)
-            .filter { $0.lastPathComponent.hasPrefix("kilo.jsonc.cursorapi-backup.") }
+            .filter { $0.lastPathComponent.hasPrefix("kilo.jsonc.api-for-cursor-backup.") }
         XCTAssertEqual(backups.count, 1)
         let backupText = try String(contentsOf: backups[0], encoding: .utf8)
         XCTAssertTrue(backupText.contains("Kilo allows comments"))
@@ -226,7 +226,7 @@ final class AgentProvisionerTests: XCTestCase {
         try provisioner.install(.opencode, settings: settings)
 
         let backups = try FileManager.default.contentsOfDirectory(at: config.deletingLastPathComponent(), includingPropertiesForKeys: nil)
-            .filter { $0.lastPathComponent.hasPrefix("opencode.json.cursorapi-backup.") }
+            .filter { $0.lastPathComponent.hasPrefix("opencode.json.api-for-cursor-backup.") }
         XCTAssertEqual(backups.count, 1)
         let backupText = try String(contentsOf: backups[0], encoding: .utf8)
         XCTAssertTrue(backupText.contains("other/model"))
