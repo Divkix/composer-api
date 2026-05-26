@@ -1,9 +1,9 @@
 {
-  "name": "composer-api",
+  "name": "api-for-cursor",
   "version": "0.1.0",
   "private": false,
   "type": "module",
-  "description": "OpenAI-compatible Chat Completions and Responses API proxy for Cursor Composer.",
+  "description": "OpenAI-compatible Chat Completions and Responses API for Cursor.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/standardagents/composer-api.git"
