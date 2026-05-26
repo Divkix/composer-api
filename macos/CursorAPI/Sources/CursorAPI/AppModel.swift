@@ -134,8 +134,9 @@ final class CursorAPIAppModel: ObservableObject {
             updateStatusText()
             return
         }
+        let shouldResolveSavedKey = !needsKeychainPermission
         stopServer()
-        startServer()
+        startServer(allowKeychainPrompt: shouldResolveSavedKey, resolveSavedKey: shouldResolveSavedKey)
     }
 
     func startServerWithoutPromptIfReady() {
