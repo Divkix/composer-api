@@ -123,6 +123,7 @@ if [ "$RUN_TESTS" -eq 1 ]; then
 fi
 
 run_step "Verify package" 60 "$ROOT_DIR/Scripts/verify-package.sh" "$APP_PATH"
+run_step "All agent config smoke" 180 "$ROOT_DIR/Scripts/smoke-agent-configs.sh" --timeout 160
 run_app_step "App window and health smoke" "$ROOT_DIR/Scripts/smoke-app.sh" --app "$APP_PATH" --require-server --timeout "$TIMEOUT_SECONDS"
 run_app_step "Codex provider smoke" "$ROOT_DIR/Scripts/smoke-codex.sh" --app "$APP_PATH" --timeout "$TIMEOUT_SECONDS"
 run_app_step "OpenCode provider smoke" "$ROOT_DIR/Scripts/smoke-opencode.sh" --app "$APP_PATH" --timeout "$TIMEOUT_SECONDS"
