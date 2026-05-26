@@ -134,7 +134,7 @@ final class CursorAPIAppModel: ObservableObject {
             updateStatusText()
             return
         }
-        let shouldResolveSavedKey = !needsKeychainPermission
+        let shouldResolveSavedKey = settings.hasInlineCursorAPIKey && !needsKeychainPermission
         stopServer()
         startServer(allowKeychainPrompt: shouldResolveSavedKey, resolveSavedKey: shouldResolveSavedKey)
     }

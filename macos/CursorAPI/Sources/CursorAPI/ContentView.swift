@@ -450,7 +450,7 @@ struct ConnectionPage: View {
                 }
                 Spacer()
                 PillActionButton(model.isRunning ? "Stop" : "Start") {
-                    model.isRunning ? model.stopServer() : model.startServer()
+                    model.isRunning ? model.stopServer() : model.startServerWithoutPromptIfReady()
                 }
                 .disabled(!model.isRunning && !model.canStartServer)
                 PillActionButton("Restart") {
