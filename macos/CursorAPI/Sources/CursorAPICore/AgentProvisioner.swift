@@ -134,13 +134,14 @@ public final class AgentProvisioner: @unchecked Sendable {
 
     private func vscodeStatus(settings: CursorAPISettings) -> AgentIntegrationStatus {
         let url = vscodeLanguageModelsURL()
+        if let installedURL = vscodeLanguageModelsURLs().first(where: { vscodeConfigMatches($0, settings: settings) }) {
+            return AgentIntegrationStatus(id: .vscode, installed: true, configPath: installedURL.path, detail: "Model metadata installed")
+        }
         guard fileManager.fileExists(atPath: url.path) else {
             return AgentIntegrationStatus(id: .vscode, installed: false, configPath: url.path, detail: "VS Code chatLanguageModels.json not found")
         }
         let text = fileText(url)
-        let installed = vscodeConfigMatches(settings: settings)
-        let detail = installed ? "Model metadata installed" : providerStatusDetail(text: text, settings: settings)
-        return AgentIntegrationStatus(id: .vscode, installed: installed, configPath: url.path, detail: detail)
+        return AgentIntegrationStatus(id: .vscode, installed: false, configPath: url.path, detail: providerStatusDetail(text: text, settings: settings))
     }
 
     private func installVSCode(settings: CursorAPISettings) throws {
@@ -204,8 +205,7 @@ public final class AgentProvisioner: @unchecked Sendable {
             && text.contains("model = \"composer-2.5-fast\"")
     }
 
-    private func vscodeConfigMatches(settings: CursorAPISettings) -> Bool {
-        let url = vscodeLanguageModelsURL()
+    private func vscodeConfigMatches(_ url: URL, settings: CursorAPISettings) -> Bool {
         guard fileManager.fileExists(atPath: url.path),
               let array = try? readJSONArray(url, defaultValue: []) else {
             return false
@@ -366,7 +366,35 @@ public final class AgentProvisioner: @unchecked Sendable {
     }
 
     private func vscodeLanguageModelsURL() -> URL {
-        homeDirectory.appending(path: "Library/Application Support/Code/User/chatLanguageModels.json")
+        selectedVSCodeProfile().languageModelsURL(homeDirectory: homeDirectory)
+    }
+
+    private func vscodeLanguageModelsURLs() -> [URL] {
+        vscodeProfiles().map { $0.languageModelsURL(homeDirectory: homeDirectory) }
+    }
+
+    private func selectedVSCodeProfile() -> VSCodeUserDataProfile {
+        let profiles = vscodeProfiles()
+        if let profile = profiles.first(where: { fileManager.fileExists(atPath: $0.languageModelsURL(homeDirectory: homeDirectory).path) }) {
+            return profile
+        }
+        if let profile = profiles.first(where: { fileManager.fileExists(atPath: $0.userDirectory(homeDirectory: homeDirectory).path) }) {
+            return profile
+        }
+        if let profile = profiles.first(where: { fileManager.fileExists(atPath: $0.applicationSupportDirectory(homeDirectory: homeDirectory).path) }) {
+            return profile
+        }
+        return profiles[0]
+    }
+
+    private func vscodeProfiles() -> [VSCodeUserDataProfile] {
+        [
+            VSCodeUserDataProfile(applicationSupportName: "Code"),
+            VSCodeUserDataProfile(applicationSupportName: "Code - Insiders"),
+            VSCodeUserDataProfile(applicationSupportName: "VSCodium"),
+            VSCodeUserDataProfile(applicationSupportName: "Cursor"),
+            VSCodeUserDataProfile(applicationSupportName: "Windsurf")
+        ]
     }
 
     private func clineGlobalStateURL() -> URL {
@@ -712,5 +740,21 @@ public final class AgentProvisioner: @unchecked Sendable {
             index = nextIndex
         }
         return output
+    }
+}
+
+private struct VSCodeUserDataProfile {
+    var applicationSupportName: String
+
+    func applicationSupportDirectory(homeDirectory: URL) -> URL {
+        homeDirectory.appending(path: "Library/Application Support/\(applicationSupportName)")
+    }
+
+    func userDirectory(homeDirectory: URL) -> URL {
+        applicationSupportDirectory(homeDirectory: homeDirectory).appending(path: "User")
+    }
+
+    func languageModelsURL(homeDirectory: URL) -> URL {
+        userDirectory(homeDirectory: homeDirectory).appending(path: "chatLanguageModels.json")
     }
 }

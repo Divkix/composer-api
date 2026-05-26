@@ -245,6 +245,46 @@ final class AgentProvisionerTests: XCTestCase {
         XCTAssertTrue(provisioner.status(for: .vscode, settings: settings).installed)
     }
 
+    func testVSCodeInstallTargetsExistingCodeFamilyUserData() throws {
+        let home = try temporaryHome()
+        let provisioner = AgentProvisioner(homeDirectory: home)
+        let cursorUser = home.appending(path: "Library/Application Support/Cursor/User")
+        try FileManager.default.createDirectory(at: cursorUser, withIntermediateDirectories: true)
+        let settings = CursorAPISettings(port: 8787)
+
+        try provisioner.install(.vscode, settings: settings)
+
+        let cursorConfig = cursorUser.appending(path: "chatLanguageModels.json")
+        let stableConfig = home.appending(path: "Library/Application Support/Code/User/chatLanguageModels.json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: cursorConfig.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stableConfig.path))
+        XCTAssertTrue(provisioner.status(for: .vscode, settings: settings).installed)
+        XCTAssertEqual(provisioner.status(for: .vscode, settings: settings).configPath, cursorConfig.path)
+    }
+
+    func testVSCodeStatusDetectsInstalledCodeFamilyConfig() throws {
+        let home = try temporaryHome()
+        let provisioner = AgentProvisioner(homeDirectory: home)
+        let settings = CursorAPISettings(port: 8787)
+        let windsurfConfig = home.appending(path: "Library/Application Support/Windsurf/User/chatLanguageModels.json")
+        try FileManager.default.createDirectory(at: windsurfConfig.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try """
+        [
+          {
+            "name": "\(CursorAPIBrand.displayName)",
+            "provider": "openai-compatible",
+            "baseUrl": "\(settings.baseURL.absoluteString)",
+            "models": ["composer-2.5", "composer-2.5-fast"]
+          }
+        ]
+        """.write(to: windsurfConfig, atomically: true, encoding: .utf8)
+
+        let status = provisioner.status(for: .vscode, settings: settings)
+
+        XCTAssertTrue(status.installed)
+        XCTAssertEqual(status.configPath, windsurfConfig.path)
+    }
+
     func testAllGeneratedAgentConfigsAreLocalOnlyAndIncludeBothComposerModels() throws {
         let home = try temporaryHome()
         let provisioner = AgentProvisioner(homeDirectory: home)
