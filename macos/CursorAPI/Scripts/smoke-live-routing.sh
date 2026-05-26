@@ -74,12 +74,12 @@ done
 [ -d "$APP_PATH" ] || fail "app bundle is missing at $APP_PATH"
 APP_PATH="$(absolute_path "$APP_PATH")"
 
-JS_RUNTIME="$APP_PATH/Contents/Resources/bun"
+JS_RUNTIME="$APP_PATH/Contents/Resources/node"
 if [ ! -x "$JS_RUNTIME" ]; then
-  JS_RUNTIME="$APP_PATH/Contents/Resources/node"
+  JS_RUNTIME="$APP_PATH/Contents/Resources/bun"
 fi
 if [ ! -x "$JS_RUNTIME" ]; then
-  JS_RUNTIME="$(command -v bun || command -v node || true)"
+  JS_RUNTIME="$(command -v node || command -v bun || true)"
 fi
 [ -x "$JS_RUNTIME" ] || fail "Bun or Node is required for JSON assertions; package the app or install one locally"
 

@@ -40,10 +40,10 @@ plist_has_nonempty_value() {
 
 [ -x "$MACOS_DIR/$APP_NAME" ] || fail "main executable is missing or not executable"
 [ -s "$RESOURCES_DIR/cursor-sdk-opencode-bridge.mjs" ] || fail "SDK bridge script is missing"
-if [ -x "$RESOURCES_DIR/bun" ]; then
-  BRIDGE_RUNTIME_PATH="$RESOURCES_DIR/bun"
-elif [ -x "$RESOURCES_DIR/node" ]; then
+if [ -x "$RESOURCES_DIR/node" ]; then
   BRIDGE_RUNTIME_PATH="$RESOURCES_DIR/node"
+elif [ -x "$RESOURCES_DIR/bun" ]; then
+  BRIDGE_RUNTIME_PATH="$RESOURCES_DIR/bun"
 else
   fail "bundled bridge runtime is missing or not executable"
 fi

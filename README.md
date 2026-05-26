@@ -120,7 +120,7 @@ For session affinity, the Worker stores only hashed owner/session keys and the
 local SDK agent id; it does not store the caller's Cursor API key. Cloudflare
 Workers do not currently provide a functional `node:http2` client, so production
 SDK runs use a tiny JavaScript bridge in `scripts/cursor-sdk-opencode-bridge.mjs`.
-The bridge can run on Bun or Node, owns only the HTTP/2 transport, and does not
+The bridge can run on Node or Bun, owns only the HTTP/2 transport, and does not
 execute local filesystem tools. In the deployed Worker this runs as a shared
 Cloudflare Container behind the `CURSOR_SDK_BRIDGE_CONTAINER` Durable Object
 binding.
@@ -170,7 +170,7 @@ CURSOR_CLIENT_VERSION="2.6.22"
 CURSOR_SDK_CLIENT_VERSION="sdk-1.0.13"
 ```
 
-Run the optional SDK HTTP/2 bridge in a local Bun or Node environment:
+Run the optional SDK HTTP/2 bridge in a local Node or Bun environment:
 
 ```bash
 npm run sdk:opencode-bridge
@@ -205,7 +205,7 @@ local SDK agent ids can be resumed across Worker isolates.
 
 The Cloudflare deployment uses the container-backed bridge by default. Do not set
 `CURSOR_SDK_BRIDGE_URL` for that path. Only set it when intentionally routing the
-SDK harness to an external Bun or Node bridge instead of the
+SDK harness to an external Node or Bun bridge instead of the
 `CURSOR_SDK_BRIDGE_CONTAINER` Durable Object binding.
 
 Optional SDK harness overrides:
