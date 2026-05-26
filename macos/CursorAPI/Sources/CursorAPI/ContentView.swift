@@ -59,7 +59,7 @@ struct ContentView: View {
             Spacer()
 
             HStack(spacing: 8) {
-                StatusPill(tone: model.sdkConfigured && model.hasCursorAPIKey ? .ok : .warning, text: model.sdkStatusText)
+                StatusPill(tone: model.sdkConfigured && model.hasCursorAPIKey && !model.needsKeychainPermission ? .ok : .warning, text: model.sdkStatusText)
                 StatusPill(tone: model.isRunning ? .ok : .muted, text: model.isRunning ? "Running" : "Stopped")
                 HeaderPageTabs(selection: $topPage)
             }
@@ -379,12 +379,12 @@ struct KeychainPermissionPanel: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Saved key needs permission")
                     .font(.callout.weight(.semibold))
-                Text("\(CursorAPIBrand.displayName) stores your Cursor API key in macOS Keychain and only reads it when starting the local API.")
+                Text("\(CursorAPIBrand.displayName) stores your Cursor API key in macOS Keychain and reads it only when you unlock Composer access.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            PillActionButton("Unlock & Start") {
+            PillActionButton(model.isRunning ? "Unlock Key" : "Unlock & Start") {
                 model.startServer()
             }
         }

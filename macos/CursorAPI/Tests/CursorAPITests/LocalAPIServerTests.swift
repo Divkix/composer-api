@@ -19,6 +19,8 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual(object["routingConfigured"] as? Bool, false)
         XCTAssertEqual(object["sdkConfigured"] as? Bool, false)
         XCTAssertEqual(object["apiKeyConfigured"] as? Bool, false)
+        XCTAssertEqual(object["apiKeyUnlocked"] as? Bool, false)
+        XCTAssertEqual(object["keychainKeyAvailable"] as? Bool, false)
         XCTAssertEqual(object["ready"] as? Bool, false)
         XCTAssertEqual(object["status"] as? String, "needs_api_key")
         XCTAssertEqual(object["baseUrl"] as? String, "http://127.0.0.1:\(port)/v1")
@@ -60,6 +62,8 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual(object["ready"] as? Bool, true)
         XCTAssertEqual(object["status"] as? String, "ready")
         XCTAssertEqual(object["apiKeyConfigured"] as? Bool, true)
+        XCTAssertEqual(object["apiKeyUnlocked"] as? Bool, true)
+        XCTAssertEqual(object["keychainKeyAvailable"] as? Bool, false)
         XCTAssertEqual(object["routingConfigured"] as? Bool, true)
         XCTAssertEqual(object["sdkConfigured"] as? Bool, true)
         XCTAssertEqual(object["missing"] as? [String], [])
@@ -84,8 +88,36 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual(object["ready"] as? Bool, false)
         XCTAssertEqual(object["status"] as? String, "routing_missing")
         XCTAssertEqual(object["apiKeyConfigured"] as? Bool, true)
+        XCTAssertEqual(object["apiKeyUnlocked"] as? Bool, true)
         XCTAssertEqual(object["routingConfigured"] as? Bool, false)
         XCTAssertEqual(object["missing"] as? [String], ["cursorAPIBaseURL", "backendBaseURL", "localAgentEndpoint"])
+    }
+
+    func testHealthEndpointReportsNeedsUnlockForSavedKeyOnly() async throws {
+        let port = try unusedTCPPort()
+        let settings = CursorAPISettings(
+            port: port,
+            keychainCursorAPIKeyAvailable: true,
+            cursorAPIBaseURL: "https://exchange.example",
+            backendBaseURL: "https://private-backend.example",
+            localAgentEndpoint: "/private/sdk/run"
+        )
+        let server = LocalAPIServer(settingsProvider: { settings }, harness: MockHarness())
+        try server.start(port: port)
+        defer { server.stop() }
+        try await Task.sleep(nanoseconds: 150_000_000)
+
+        let (data, response) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(port)/health")!)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        XCTAssertEqual(object["ready"] as? Bool, false)
+        XCTAssertEqual(object["status"] as? String, "needs_unlock")
+        XCTAssertEqual(object["apiKeyConfigured"] as? Bool, true)
+        XCTAssertEqual(object["apiKeyUnlocked"] as? Bool, false)
+        XCTAssertEqual(object["keychainKeyAvailable"] as? Bool, true)
+        XCTAssertEqual(object["routingConfigured"] as? Bool, true)
+        XCTAssertEqual(object["missing"] as? [String], [])
     }
 
     func testStartFailsWhenPortIsAlreadyInUse() throws {

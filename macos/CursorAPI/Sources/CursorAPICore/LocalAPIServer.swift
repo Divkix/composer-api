@@ -613,6 +613,7 @@ public final class LocalAPIServer: @unchecked Sendable {
         let localAgentConfigured = settings.localAgentEndpoint.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty != nil
         let routingConfigured = keyExchangeConfigured && backendConfigured && localAgentConfigured
         let apiKeyConfigured = settings.hasCursorAPIKey
+        let apiKeyUnlocked = settings.hasInlineCursorAPIKey
         let missing = [
             apiKeyConfigured ? nil : "cursorAPIKey",
             keyExchangeConfigured ? nil : "cursorAPIBaseURL",
@@ -620,16 +621,18 @@ public final class LocalAPIServer: @unchecked Sendable {
             localAgentConfigured ? nil : "localAgentEndpoint"
         ].compactMap { $0 }
         let status: String
-        if apiKeyConfigured && routingConfigured {
+        if apiKeyUnlocked && routingConfigured {
             status = "ready"
         } else if !apiKeyConfigured {
             status = "needs_api_key"
-        } else {
+        } else if !routingConfigured {
             status = "routing_missing"
+        } else {
+            status = "needs_unlock"
         }
         return [
             "ok": true,
-            "ready": apiKeyConfigured && routingConfigured,
+            "ready": apiKeyUnlocked && routingConfigured,
             "status": status,
             "service": CursorAPIBrand.displayName,
             "baseUrl": settings.baseURL.absoluteString,
@@ -637,6 +640,8 @@ public final class LocalAPIServer: @unchecked Sendable {
             "routingConfigured": routingConfigured,
             "sdkConfigured": routingConfigured,
             "apiKeyConfigured": apiKeyConfigured,
+            "apiKeyUnlocked": apiKeyUnlocked,
+            "keychainKeyAvailable": settings.keychainCursorAPIKeyAvailable,
             "missing": missing,
             "models": ComposerModels.all.map(\.id),
             "responses": [

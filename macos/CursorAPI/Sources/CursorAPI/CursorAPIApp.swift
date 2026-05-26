@@ -23,7 +23,11 @@ final class CursorAPIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDeleg
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMainMenu()
         DispatchQueue.main.async { [weak self] in
-            self?.revealMainWindow()
+            guard let self else { return }
+            self.revealMainWindow()
+            DispatchQueue.main.async { [weak self] in
+                self?.model.startServerWithoutPromptIfReady()
+            }
         }
     }
 

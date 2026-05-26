@@ -59,6 +59,9 @@ final class CursorAPIAppModel: ObservableObject {
         if !sdkConfigured {
             return "Build Incomplete"
         }
+        if needsKeychainPermission {
+            return "Needs Unlock"
+        }
         if !hasCursorAPIKey {
             return "Needs API Key"
         }
@@ -69,7 +72,7 @@ final class CursorAPIAppModel: ObservableObject {
         hasCursorAPIKey && sdkConfigured && !isCheckingSDK
     }
 
-    func startServer(allowKeychainPrompt: Bool = true) {
+    func startServer(allowKeychainPrompt: Bool = true, resolveSavedKey: Bool = true) {
         guard hasCursorAPIKey else {
             isRunning = false
             statusText = "Enter a Cursor API key to start the local API"
@@ -83,13 +86,17 @@ final class CursorAPIAppModel: ObservableObject {
             return
         }
         do {
-            settings = try store.resolvingCursorAPIKey(in: settings, allowUserPrompt: allowKeychainPrompt)
-            settings.keychainCursorAPIKeyAvailable = true
+            if resolveSavedKey {
+                settings = try store.resolvingCursorAPIKey(in: settings, allowUserPrompt: allowKeychainPrompt)
+                settings.keychainCursorAPIKeyAvailable = true
+                needsKeychainPermission = false
+            } else {
+                needsKeychainPermission = settings.keychainCursorAPIKeyAvailable && !settings.hasInlineCursorAPIKey
+            }
             let requestedPort = settings.port
             let activePort = try server.start(preferredPort: requestedPort, fallbackLimit: Self.portFallbackLimit)
             settings.port = activePort
             isRunning = true
-            needsKeychainPermission = false
             updateStatusText()
             if activePort != requestedPort {
                 statusText = "Port \(requestedPort) was busy; listening on \(baseURL)"
@@ -128,6 +135,13 @@ final class CursorAPIAppModel: ObservableObject {
         }
         stopServer()
         startServer()
+    }
+
+    func startServerWithoutPromptIfReady() {
+        guard canStartServer, !isRunning else {
+            return
+        }
+        startServer(allowKeychainPrompt: false, resolveSavedKey: false)
     }
 
     func saveKeyAndStartIfReady() {
@@ -215,7 +229,11 @@ final class CursorAPIAppModel: ObservableObject {
 
     private func updateStatusText() {
         if isRunning {
-            statusText = sdkConfigured ? "Listening on \(baseURL)" : "Listening on \(baseURL); bundled transport missing"
+            if needsKeychainPermission {
+                statusText = "Listening on \(baseURL); unlock the saved key for one-click agents"
+            } else {
+                statusText = sdkConfigured ? "Listening on \(baseURL)" : "Listening on \(baseURL); bundled transport missing"
+            }
         } else if needsKeychainPermission {
             statusText = "Click Start to allow \(CursorAPIBrand.displayName) to read the saved key from Keychain"
         } else if !hasCursorAPIKey {
