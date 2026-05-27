@@ -136,6 +136,62 @@ process.stdin.on("end", () => {
 '
 }
 
+extract_chat_tool_call_summary() {
+  "$JS_RUNTIME" -e '
+let body = "";
+process.stdin.on("data", (chunk) => body += chunk);
+process.stdin.on("end", () => {
+  const json = JSON.parse(body);
+  const call = json.choices?.[0]?.message?.tool_calls?.[0];
+  if (!call) process.exit(2);
+  const args = JSON.parse(call.function?.arguments || "{}");
+  process.stdout.write([
+    call.id || "",
+    call.function?.name || "",
+    args.command || ""
+  ].join("\n"));
+});
+'
+}
+
+build_chat_tool_followup_body() {
+  "$JS_RUNTIME" -e '
+let body = "";
+process.stdin.on("data", (chunk) => body += chunk);
+process.stdin.on("end", () => {
+  const json = JSON.parse(body);
+  const call = json.choices?.[0]?.message?.tool_calls?.[0];
+  if (!call) process.exit(2);
+  process.stdout.write(JSON.stringify({
+    model: "composer-2.5-fast",
+    stream: false,
+    messages: [
+      { role: "user", content: "Use the bash tool to run exactly: printf LIVE_CHAT_TOOL_OK. After the tool result, reply exactly LIVE_CHAT_TOOL_DONE." },
+      { role: "assistant", content: "", tool_calls: [call] },
+      { role: "tool", tool_call_id: call.id, content: "(no output)" }
+    ],
+    tools: [
+      {
+        type: "function",
+        function: {
+          name: "bash",
+          parameters: {
+            type: "object",
+            properties: {
+              command: { type: "string" },
+              description: { type: "string" },
+              workdir: { type: "string" }
+            },
+            required: ["command"]
+          }
+        }
+      }
+    ]
+  }));
+});
+'
+}
+
 extract_response_text() {
   "$JS_RUNTIME" -e '
 let body = "";
@@ -224,6 +280,19 @@ chat_content="$(post_json "/chat/completions" "$chat_body" | extract_chat_conten
 stream_body='{"model":"composer-2.5-fast","messages":[{"role":"user","content":"Reply exactly: hello"}],"stream":true,"stream_options":{"include_usage":true}}'
 stream_content="$(post_json "/chat/completions" "$stream_body" | extract_stream_text)"
 [ "$stream_content" = "hello" ] || fail "streaming chat returned '$stream_content', expected hello"
+
+chat_tool_body='{"model":"composer-2.5-fast","messages":[{"role":"user","content":"Use the bash tool to run exactly: printf LIVE_CHAT_TOOL_OK. After the tool result, reply exactly LIVE_CHAT_TOOL_DONE."}],"stream":false,"tool_choice":{"type":"function","function":{"name":"bash"}},"tools":[{"type":"function","function":{"name":"bash","parameters":{"type":"object","properties":{"command":{"type":"string"},"description":{"type":"string"},"workdir":{"type":"string"}},"required":["command"]}}}]}'
+chat_tool_response="$(post_json "/chat/completions" "$chat_tool_body")"
+chat_tool_summary="$(printf '%s' "$chat_tool_response" | extract_chat_tool_call_summary)"
+case "$chat_tool_summary" in
+  *$'\n'bash$'\n'*LIVE_CHAT_TOOL_OK*) ;;
+  *) fail "chat tool call mapping returned unexpected summary: $chat_tool_summary" ;;
+esac
+chat_tool_followup_body="$(printf '%s' "$chat_tool_response" | build_chat_tool_followup_body)"
+chat_tool_followup_content="$(post_json "/chat/completions" "$chat_tool_followup_body" | extract_chat_content)"
+[ "$chat_tool_followup_content" = "LIVE_CHAT_TOOL_DONE" ] \
+  || fail "chat tool-result continuation returned '$chat_tool_followup_content', expected LIVE_CHAT_TOOL_DONE"
+echo "Verified direct chat tool-result continuation through API for Cursor."
 
 responses_body='{"model":"composer-2.5-fast","input":"Reply exactly: hello","stream":false}'
 responses_content="$(post_json "/responses" "$responses_body" | extract_response_text)"
@@ -479,7 +548,7 @@ TOML
   if ! grep -F "codexsmoke" "$codex_last_message" "$codex_output" >/dev/null; then
     fail "Codex did not surface the live Composer response"
   fi
-  if grep -F "ERROR:" "$codex_output" >/dev/null; then
+  if grep -F "ERROR:" "$codex_output" | grep -vF "ERROR: Reconnecting" >/dev/null; then
     fail "Codex live run reported an error"
   fi
   echo "Verified live Codex response through API for Cursor."

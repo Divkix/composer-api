@@ -1320,6 +1320,7 @@ describe("Cursor SDK local-agent bridge", () => {
 
     expect(prompt).toContain("client_shell");
     expect(prompt).toContain("Do not use the SDK built-in shell");
+    expect(prompt).toContain("LOCAL TOOL RESULT records for your previous tool call");
   });
 
   it("uses SDK-compatible local options that do not wedge local runs", () => {
