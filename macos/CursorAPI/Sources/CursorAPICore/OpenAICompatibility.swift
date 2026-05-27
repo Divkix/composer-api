@@ -1891,7 +1891,7 @@ public enum OpenAICompatibility {
 
     static func toolCallRetryHint(_ toolCall: CursorToolCall, tools: [OpenAIToolSpec], context: ToolCallContext? = nil) -> String {
         let normalizedToolCall = normalizeSDKToolCall(toolCall)
-        guard let tool = resolveToolSpec(normalizedToolCall.name, arguments: normalizedToolCall.arguments, tools: tools) else {
+        guard let tool = resolveToolSpec(normalizedToolCall.name, arguments: normalizedToolCall.arguments, tools: tools, context: context) else {
             if tools.isEmpty {
                 return "No client tool inventory was available for SDK \(normalizedToolCall.name)."
             }
@@ -1961,7 +1961,7 @@ public enum OpenAICompatibility {
 
     private static func resolveToolCall(_ toolCall: CursorToolCall, tools: [OpenAIToolSpec], context: ToolCallContext? = nil) -> ResolvedToolCall? {
         let normalizedToolCall = normalizeSDKToolCall(toolCall)
-        guard let tool = resolveToolSpec(normalizedToolCall.name, arguments: normalizedToolCall.arguments, tools: tools) else {
+        guard let tool = resolveToolSpec(normalizedToolCall.name, arguments: normalizedToolCall.arguments, tools: tools, context: context) else {
             guard tools.isEmpty else { return nil }
             return ResolvedToolCall(name: normalizedToolCall.name, arguments: normalizedToolCall.arguments)
         }
@@ -1989,7 +1989,7 @@ public enum OpenAICompatibility {
         return CursorToolCall(name: "write", arguments: arguments)
     }
 
-    private static func resolveToolSpec(_ name: String, arguments: [String: JSONValue], tools: [OpenAIToolSpec]) -> OpenAIToolSpec? {
+    private static func resolveToolSpec(_ name: String, arguments: [String: JSONValue], tools: [OpenAIToolSpec], context: ToolCallContext? = nil) -> OpenAIToolSpec? {
         if let exact = tools.first(where: { $0.name == name && nameMatchedToolCanAccept(sdkToolName: name, tool: $0) }) { return exact }
         let normalized = normalizedName(name)
         if let caseInsensitive = tools.first(where: { normalizedName($0.name) == normalized && nameMatchedToolCanAccept(sdkToolName: name, tool: $0) }) {
@@ -1997,7 +1997,7 @@ public enum OpenAICompatibility {
         }
 
         if canonicalToolName(name) == "mcp",
-           let mcpTool = resolveSpecificMCPTool(arguments: arguments, tools: tools) {
+           let mcpTool = resolveSpecificMCPTool(arguments: arguments, tools: tools, context: context) {
             return mcpTool
         }
 
@@ -2051,15 +2051,49 @@ public enum OpenAICompatibility {
         knownSDKCanonicalTools.contains(name)
     }
 
-    private static func resolveSpecificMCPTool(arguments: [String: JSONValue], tools: [OpenAIToolSpec]) -> OpenAIToolSpec? {
+    private static func resolveSpecificMCPTool(arguments: [String: JSONValue], tools: [OpenAIToolSpec], context: ToolCallContext? = nil) -> OpenAIToolSpec? {
         let candidates = specificMCPToolNameCandidates(arguments: arguments)
         guard !candidates.isEmpty else { return nil }
-        let normalizedCandidates = Set(candidates.map(normalizedName))
-        return tools.first { tool in
-            let normalizedTool = normalizedName(tool.name)
-            return normalizedCandidates.contains(normalizedTool)
-                || normalizedCandidates.contains(where: { normalizedTool.hasSuffix($0) })
+        let payload = mcpPayloadArguments(arguments)
+        let nestedSDKToolName = mcpNestedSDKToolName(arguments, fallback: "mcp")
+        return tools
+            .compactMap { tool -> (tool: OpenAIToolSpec, score: Int)? in
+                guard let nameScore = mcpToolNameMatchScore(tool.name, candidates: candidates) else {
+                    return nil
+                }
+                let normalized = finalizedToolArguments(
+                    specificMCPToolArguments(arguments, tool: tool, context: context),
+                    source: payload,
+                    sdkToolName: nestedSDKToolName,
+                    tool: tool,
+                    context: context
+                )
+                let schemaScore = toolArgumentsSatisfySchema(normalized, tool: tool) ? 10_000 : 0
+                return (tool, schemaScore + nameScore)
+            }
+            .max(by: { $0.score < $1.score })?
+            .tool
+    }
+
+    private static func mcpToolNameMatchScore(_ toolName: String, candidates: [String]) -> Int? {
+        let normalizedTool = normalizedName(toolName)
+        var best: Int?
+        for candidate in candidates {
+            let normalizedCandidate = normalizedName(candidate)
+            guard !normalizedCandidate.isEmpty else { continue }
+            let score: Int?
+            if normalizedTool == normalizedCandidate {
+                score = 1_000 + normalizedCandidate.count
+            } else if normalizedTool.hasSuffix(normalizedCandidate) {
+                score = 100 + normalizedCandidate.count
+            } else {
+                score = nil
+            }
+            if let score {
+                best = max(best ?? 0, score)
+            }
         }
+        return best
     }
 
     private static func specificMCPToolNameCandidates(arguments: [String: JSONValue]) -> [String] {
@@ -2158,7 +2192,14 @@ public enum OpenAICompatibility {
         }
 
         if canonical == "mcp", selectedCanonical != "mcp" {
-            return finalizedToolArguments(specificMCPToolArguments(arguments, tool: tool, context: context), source: arguments, sdkToolName: sdkToolName, tool: tool, context: context)
+            let payload = mcpPayloadArguments(arguments)
+            return finalizedToolArguments(
+                specificMCPToolArguments(arguments, tool: tool, context: context),
+                source: payload,
+                sdkToolName: mcpNestedSDKToolName(arguments, fallback: sdkToolName),
+                tool: tool,
+                context: context
+            )
         }
 
         func copy(_ source: String, as candidates: [String]) {
@@ -2695,6 +2736,11 @@ public enum OpenAICompatibility {
             return [:]
         }
         return objectArgumentValue(value) ?? [:]
+    }
+
+    private static func mcpNestedSDKToolName(_ arguments: [String: JSONValue], fallback: String) -> String {
+        firstArgument(in: arguments, keys: ["toolName", "tool_name", "tool", "name"])?.value.stringValue
+            .map(canonicalToolName) ?? fallback
     }
 
     private static func mcpPayloadAliases() -> [String] {

@@ -5476,6 +5476,77 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertNil(arguments["args"])
     }
 
+    func testChatToolCallsPreferSchemaValidProviderSpecificMCPTool() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[{"role":"user","content":"use filesystem writer"}],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"write_file",
+                "parameters":{
+                  "type":"object",
+                  "additionalProperties":false,
+                  "properties":{
+                    "url":{"type":"string"}
+                  },
+                  "required":["url"]
+                }
+              }
+            },
+            {
+              "type":"function",
+              "function":{
+                "name":"mcp__filesystem__write_file",
+                "parameters":{
+                  "type":"object",
+                  "additionalProperties":false,
+                  "properties":{
+                    "mode":{"type":"string","enum":["write","append"]},
+                    "filePath":{"type":"string"},
+                    "content":{"type":"string"},
+                    "overwrite":{"type":"boolean"}
+                  },
+                  "required":["mode","filePath","content","overwrite"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+        let toolCall = CursorToolCall(name: "mcp", arguments: [
+            "providerIdentifier": .string("filesystem"),
+            "toolName": .string("write_file"),
+            "args": .object([
+                "file_path": .string("src/App.tsx"),
+                "contents": .string("export default function App() { return null }"),
+                "overwrite": .bool(true)
+            ])
+        ])
+
+        let object = OpenAICompatibility.chatCompletionResponse(
+            id: "chatcmpl_mcp_collision",
+            created: 1,
+            prepared: prepared,
+            output: CursorSDKOutput(text: "", toolCalls: [toolCall], agentID: "agent-test", runID: "run-test")
+        )
+
+        let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
+        let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        let toolCalls = try XCTUnwrap(message["tool_calls"] as? [[String: Any]])
+        let function = try XCTUnwrap(toolCalls.first?["function"] as? [String: Any])
+        let arguments = try decodedArguments(function)
+
+        XCTAssertEqual(function["name"] as? String, "mcp__filesystem__write_file")
+        XCTAssertEqual(arguments["mode"] as? String, "write")
+        XCTAssertEqual(arguments["filePath"] as? String, "src/App.tsx")
+        XCTAssertEqual(arguments["content"] as? String, "export default function App() { return null }")
+        XCTAssertEqual(arguments["overwrite"] as? Bool, true)
+        XCTAssertNil(arguments["url"])
+    }
+
     func testChatToolCallsMapSDKMCPArgsToSingleWordClientTool() throws {
         let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
         {
@@ -6377,6 +6448,71 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual(arguments["content"] as? String, "<h1>Hello</h1>")
         XCTAssertNil(arguments["path"])
         XCTAssertNil(arguments["fileText"])
+    }
+
+    func testResponsesFunctionCallsPreferSchemaValidProviderSpecificMCPTool() throws {
+        let prepared = try OpenAICompatibility.prepareResponsesRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "input":"use filesystem writer",
+          "tools":[
+            {
+              "type":"function",
+              "name":"write_file",
+              "parameters":{
+                "type":"object",
+                "additionalProperties":false,
+                "properties":{
+                  "url":{"type":"string"}
+                },
+                "required":["url"]
+              }
+            },
+            {
+              "type":"function",
+              "name":"mcp__filesystem__write_file",
+              "parameters":{
+                "type":"object",
+                "additionalProperties":false,
+                "properties":{
+                  "mode":{"type":"string","enum":["write","append"]},
+                  "filePath":{"type":"string"},
+                  "content":{"type":"string"},
+                  "overwrite":{"type":"boolean"}
+                },
+                "required":["mode","filePath","content","overwrite"]
+              }
+            }
+          ]
+        }
+        """#.utf8))
+        let toolCall = CursorToolCall(name: "mcp", arguments: [
+            "providerIdentifier": .string("filesystem"),
+            "toolName": .string("write_file"),
+            "args": .object([
+                "file_path": .string("src/App.tsx"),
+                "contents": .string("export default function App() { return null }"),
+                "overwrite": .bool(true)
+            ])
+        ])
+
+        let object = OpenAICompatibility.responseObject(
+            id: "resp_mcp_collision",
+            created: 1,
+            prepared: prepared,
+            output: CursorSDKOutput(text: "", toolCalls: [toolCall], agentID: "agent-test", runID: "run-test")
+        )
+
+        let outputItems = try XCTUnwrap(object["output"] as? [[String: Any]])
+        let functionCall = try XCTUnwrap(outputItems.first { ($0["type"] as? String) == "function_call" })
+        let arguments = try decodedArguments(functionCall)
+
+        XCTAssertEqual(functionCall["name"] as? String, "mcp__filesystem__write_file")
+        XCTAssertEqual(arguments["mode"] as? String, "write")
+        XCTAssertEqual(arguments["filePath"] as? String, "src/App.tsx")
+        XCTAssertEqual(arguments["content"] as? String, "export default function App() { return null }")
+        XCTAssertEqual(arguments["overwrite"] as? Bool, true)
+        XCTAssertNil(arguments["url"])
     }
 
     func testResponsesFunctionCallsMapSDKPatchContentWithoutSeparatePathToPatchOnlyTool() throws {
