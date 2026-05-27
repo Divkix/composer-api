@@ -654,9 +654,10 @@ export function toOpenAiToolCalls(input: {
     const tool = resolveToolSpec(normalizedToolCall.name, normalizedToolCall.arguments ?? {}, tools);
     if (!tool && tools.length > 0) return [];
     const name = tool?.name ?? normalizedToolCall.name;
+    const sdkCanonical = canonicalToolName(normalizedToolCall.name);
     const toolArguments = normalizeToolArguments(normalizedToolCall.arguments ?? {}, tool, normalizedToolCall.name, 0, input.context);
     return [{
-      id: `call_${input.responseId.replace(/[^A-Za-z0-9]/g, "").slice(-18)}_${index}`,
+      id: `call_${input.responseId.replace(/[^A-Za-z0-9]/g, "").slice(-18)}_${sdkCanonical}_${index}`,
       type: "function",
       function: {
         name,
@@ -1430,14 +1431,22 @@ function sdkToolResultFeedback(
   const name = original?.name || fallbackToolName || "unknown";
   const args = original?.args ?? {};
   const tool = toolSpecByName(tools, name);
+  const sdkName = sdkCanonicalFromToolCallId(toolCallId) ?? sdkToolNameForOpenCodeTool(name, args, tool);
   return {
     type: "tool_call",
     call_id: toolCallId || "unknown",
-    name: sdkToolNameForOpenCodeTool(name),
+    name: sdkName,
     status: "completed",
-    args: openCodeArgsToSdkArgs(name, args, tool),
-    result: openCodeToolResultToSdkResult(name, args, resultText)
+    args: openCodeArgsToSdkArgs(name, args, tool, sdkName),
+    result: openCodeToolResultToSdkResult(name, args, resultText, sdkName)
   };
+}
+
+function sdkCanonicalFromToolCallId(toolCallId: string): string | undefined {
+  const match = /_(shell|write|read|edit|delete|grep|glob|ls|readlints|mcp|semsearch|todowrite)_\d+$/i.exec(toolCallId);
+  if (!match) return undefined;
+  const canonical = match[1].toLowerCase();
+  return KNOWN_SDK_CANONICAL_TOOLS.has(canonical) ? canonical : undefined;
 }
 
 function toolSpecByName(tools: OpenAiToolSpec[], name: string): OpenAiToolSpec | undefined {
@@ -1445,21 +1454,35 @@ function toolSpecByName(tools: OpenAiToolSpec[], name: string): OpenAiToolSpec |
   return tools.find((tool) => normalizeToolName(tool.name) === normalized);
 }
 
-function sdkToolNameForOpenCodeTool(name: string): string {
-  if (mcpTargetForClientToolName(name)) return "mcp";
+function sdkToolNameForOpenCodeTool(name: string, args: Record<string, unknown> = {}, tool?: OpenAiToolSpec): string {
   const normalized = normalizeToolName(name);
-  if (["bash", "shell", "terminal"].includes(normalized)) return "shell";
-  if (["list", "ls"].includes(normalized)) return "ls";
-  if (["read", "readfile"].includes(normalized)) return "read";
-  if (["write", "writefile"].includes(normalized)) return "write";
-  if (["edit", "editfile"].includes(normalized)) return "edit";
-  if (isGlobLikeToolName(normalized)) return "glob";
-  if (["grep", "search"].includes(normalized)) return "grep";
+  const directCanonical = canonicalToolName(name);
+  if (KNOWN_SDK_CANONICAL_TOOLS.has(directCanonical)) return directCanonical;
+  const inferred = inferSdkCanonicalFromClientTool(args, tool);
+  if (inferred) return inferred;
+  if (mcpTargetForClientToolName(name)) return "mcp";
   return name;
 }
 
-function openCodeArgsToSdkArgs(toolName: string, args: Record<string, unknown>, tool?: OpenAiToolSpec): Record<string, unknown> {
-  const mcpTarget = mcpTargetForClientToolName(toolName);
+function inferSdkCanonicalFromClientTool(args: Record<string, unknown>, tool?: OpenAiToolSpec): string | undefined {
+  const operation = firstStringArg(args, ...operationPropertyCandidates());
+  const normalizedOperation = normalizeToolName(operation || "");
+  if (["write", "create", "overwrite"].includes(normalizedOperation)) return "write";
+  if (["replace", "strreplace", "edit", "update"].includes(normalizedOperation)) return "edit";
+  if (["read", "view", "open"].includes(normalizedOperation)) return "read";
+  if (["delete", "remove"].includes(normalizedOperation)) return "delete";
+  if (tool && schemaLooksCompatible("shell", tool) && firstStringArg(args, ...shellCommandCandidates())) return "shell";
+  if (tool && schemaLooksCompatible("edit", tool) && firstStringArgAllowEmpty(args, ...oldTextCandidates()) !== undefined && firstStringArgAllowEmpty(args, ...newTextCandidates()) !== undefined) return "edit";
+  if (tool && schemaLooksCompatible("write", tool) && firstStringArg(args, ...pathCandidates()) && firstStringArgAllowEmpty(args, ...fileContentCandidates()) !== undefined) return "write";
+  if (tool && schemaLooksCompatible("glob", tool) && firstStringArg(args, ...globPatternCandidates())) return "glob";
+  if (tool && schemaLooksCompatible("grep", tool) && firstStringArg(args, "pattern", "query", "search", "regex", "searchPattern", "search_pattern")) return "grep";
+  if (tool && schemaLooksCompatible("ls", tool) && firstStringArg(args, ...pathCandidates(), "directory", "dir")) return "ls";
+  return undefined;
+}
+
+function openCodeArgsToSdkArgs(toolName: string, args: Record<string, unknown>, tool?: OpenAiToolSpec, sdkName?: string): Record<string, unknown> {
+  const canonical = sdkName && KNOWN_SDK_CANONICAL_TOOLS.has(sdkName) ? sdkName : sdkToolNameForOpenCodeTool(toolName, args, tool);
+  const mcpTarget = canonical === "mcp" ? mcpTargetForClientToolName(toolName) : undefined;
   if (mcpTarget) {
     return {
       providerIdentifier: mcpTarget.provider,
@@ -1467,53 +1490,52 @@ function openCodeArgsToSdkArgs(toolName: string, args: Record<string, unknown>, 
       args
     };
   }
-  const normalized = normalizeToolName(toolName);
-  if (["bash", "shell", "terminal"].includes(normalized)) {
+  if (canonical === "shell") {
     const timeout = firstNumberNamedArg(args, "timeout", "timeoutMs", "timeout_ms", "timeoutSeconds", "timeout_seconds");
     return compactRecord({
-      command: firstStringArg(args, "command", "cmd", "script"),
-      workingDirectory: firstStringArg(args, "cwd", "workingDirectory", "directory", "path"),
+      command: firstStringArg(args, ...shellCommandCandidates()),
+      workingDirectory: firstStringArg(args, ...shellWorkdirCandidates()),
       timeout: sdkTimeoutArgument(timeout, tool)
     });
   }
-  if (["write", "writefile"].includes(normalized)) {
+  if (canonical === "write") {
     return compactRecord({
-      path: firstStringArg(args, "path", "filePath", "file"),
-      fileText: firstStringArg(args, "content", "text", "fileText", "newString")
+      path: firstStringArg(args, ...pathCandidates()),
+      fileText: firstStringArg(args, ...fileContentCandidates(), ...newTextCandidates())
     });
   }
-  if (["read", "readfile"].includes(normalized)) {
+  if (canonical === "read") {
     return compactRecord({
-      path: firstStringArg(args, "path", "filePath", "file", "directory"),
+      path: firstStringArg(args, ...pathCandidates(), "directory", "dir"),
       offset: firstNumberArg(args, "offset", "start", "startLine", "start_line"),
       limit: firstNumberArg(args, "limit", "maxLines", "max_lines", "lineCount", "line_count")
     });
   }
-  if (["delete"].includes(normalized)) {
+  if (canonical === "delete") {
     return compactRecord({
-      path: firstStringArg(args, "path", "filePath", "file", "directory")
+      path: firstStringArg(args, ...pathCandidates(), "directory", "dir")
     });
   }
-  if (["ls", "list"].includes(normalized)) {
+  if (canonical === "ls") {
     return compactRecord({
-      path: firstStringArg(args, "path", "filePath", "file", "directory"),
+      path: firstStringArg(args, ...pathCandidates(), "directory", "dir"),
       limit: firstNumberArg(args, "limit", "maxResults", "max_results")
     });
   }
-  if (["edit", "editfile"].includes(normalized)) {
+  if (canonical === "edit") {
     return compactRecord({
-      path: firstStringArg(args, "path", "filePath", "file", "directory"),
-      oldString: firstStringArgAllowEmpty(args, "oldString", "old_string", "oldText", "old_text", "search", "searchString", "search_string"),
-      newString: firstStringArgAllowEmpty(args, "newString", "new_string", "newText", "new_text", "replacement", "replace", "content")
+      path: firstStringArg(args, ...pathCandidates(), "directory", "dir"),
+      oldString: firstStringArgAllowEmpty(args, ...oldTextCandidates()),
+      newString: firstStringArgAllowEmpty(args, ...newTextCandidates())
     });
   }
-  if (isGlobLikeToolName(normalized)) {
+  if (canonical === "glob") {
     return compactRecord({
-      targetDirectory: firstStringArg(args, "path", "directory", "cwd", "targetDirectory"),
-      globPattern: firstStringArg(args, "pattern", "glob", "include", "globPattern")
+      targetDirectory: firstStringArg(args, ...globPathCandidates()),
+      globPattern: firstStringArg(args, ...globPatternCandidates())
     });
   }
-  if (["grep", "search"].includes(normalized)) {
+  if (canonical === "grep") {
     return compactRecord({
       pattern: firstStringArg(args, "pattern", "query", "search", "regex"),
       path: firstStringArg(args, "path", "directory", "cwd"),
@@ -1527,13 +1549,13 @@ function openCodeArgsToSdkArgs(toolName: string, args: Record<string, unknown>, 
   return args;
 }
 
-function openCodeToolResultToSdkResult(toolName: string, args: Record<string, unknown>, resultText: string): Record<string, unknown> {
+function openCodeToolResultToSdkResult(toolName: string, args: Record<string, unknown>, resultText: string, sdkName?: string): Record<string, unknown> {
   const parsed = parseToolResultPayload(resultText);
-  if (mcpTargetForClientToolName(toolName)) {
+  const canonical = sdkName && KNOWN_SDK_CANONICAL_TOOLS.has(sdkName) ? sdkName : sdkToolNameForOpenCodeTool(toolName, args);
+  if (canonical === "mcp") {
     return sdkToolResult(parsed, resultText, isRecord(parsed) ? parsed : { text: resultText });
   }
-  const normalized = normalizeToolName(toolName);
-  if (["bash", "shell", "terminal"].includes(normalized)) {
+  if (canonical === "shell") {
     return sdkToolResult(parsed, resultText, {
       exitCode: numberFromParsed(parsed, ["exitCode", "exit_code", "code"]) ?? 0,
       signal: stringFromParsed(parsed, ["signal"]) ?? "",
@@ -1542,7 +1564,7 @@ function openCodeToolResultToSdkResult(toolName: string, args: Record<string, un
       executionTime: numberFromParsed(parsed, ["executionTime", "durationMs", "duration_ms"]) ?? 0
     });
   }
-  if (["read", "readfile"].includes(normalized)) {
+  if (canonical === "read") {
     const content = stringFromParsed(parsed, ["content", "text", "output"]) ?? resultText;
     return sdkToolResult(parsed, resultText, {
       content,
@@ -1550,20 +1572,20 @@ function openCodeToolResultToSdkResult(toolName: string, args: Record<string, un
       fileSize: content.length
     });
   }
-  if (["write", "writefile"].includes(normalized)) {
-    const fileText = firstStringArg(args, "content", "text", "fileText", "newString") || "";
+  if (canonical === "write") {
+    const fileText = firstStringArg(args, ...fileContentCandidates(), ...newTextCandidates()) || "";
     return sdkToolResult(parsed, resultText, {
-      path: firstStringArg(args, "path", "filePath", "file") || "",
+      path: firstStringArg(args, ...pathCandidates()) || "",
       linesCreated: lineCount(fileText),
       fileSize: fileText.length
     });
   }
-  if (["edit", "editfile"].includes(normalized)) {
+  if (canonical === "edit") {
     return sdkToolResult(parsed, resultText, {
       diffString: stringFromParsed(parsed, ["diff", "diffString", "output"]) ?? resultText
     });
   }
-  if (isGlobLikeToolName(normalized)) {
+  if (canonical === "glob") {
     const files = stringsFromParsed(parsed, ["files", "paths"]) ?? resultTextLines(resultText);
     return sdkToolResult(parsed, resultText, {
       files,
@@ -1929,17 +1951,17 @@ function schemaLooksCompatible(emittedName: string, tool: OpenAiToolSpec): boole
   const toolCanonical = canonicalToolName(tool.name);
   switch (canonical) {
     case "shell":
-      return has(["command", "cmd", "script", "input"]);
+      return has(shellCommandCandidates());
     case "write":
-      return has(pathCandidates()) && has(["fileText", "file_text", "content", "contents", "text", "fileContent", "file_content"]);
+      return has(pathCandidates()) && has(fileContentCandidates());
     case "read":
       return has(pathCandidates());
     case "delete":
       return toolCanonical === "delete" && has(pathCandidates());
     case "edit":
       return has(pathCandidates())
-        && has(["oldString", "old_string", "old_str", "old", "oldText", "old_text", "search", "searchString", "search_string"])
-        && has(["newString", "new_string", "new_str", "newText", "new_text", "replacement", "replace", "content"]);
+        && has(oldTextCandidates())
+        && has(newTextCandidates());
     case "grep":
       return has(["pattern", "query", "regex", "search"]);
     case "glob":
@@ -1981,12 +2003,12 @@ function shellFallbackArguments(
 ): Record<string, unknown> {
   const schema = toolParameterSchema(tool);
   const normalizedProperties = new Map(schema.properties.map((property) => [normalizeToolName(property), property]));
-  const commandKey = firstMatchingProperty(["command", "cmd", "script", "input"], schema.properties, normalizedProperties);
+  const commandKey = firstMatchingProperty(shellCommandCandidates(), schema.properties, normalizedProperties);
   const command = shellFallbackCommand(args, emittedName);
   if (!commandKey || !command) return args;
   const output: Record<string, unknown> = { [commandKey]: command };
-  const workdir = firstArg(args, ["workingDirectory", "working_directory", "workdir", "cwd", "directory"]);
-  const workdirKey = firstMatchingProperty(["workingDirectory", "working_directory", "workdir", "cwd", "directory"], schema.properties, normalizedProperties);
+  const workdir = firstArg(args, shellExplicitWorkdirCandidates());
+  const workdirKey = firstMatchingProperty(shellExplicitWorkdirCandidates(), schema.properties, normalizedProperties);
   if (workdirKey && shouldIncludeOptionalPath(workdir)) output[workdirKey] = workdir;
   const timeout = firstArg(args, ["timeout", "timeoutMs", "timeout_ms", "timeoutSeconds", "timeout_seconds"]);
   const timeoutKey = firstMatchingProperty(["timeout", "timeoutMs", "timeout_ms", "timeoutSeconds", "timeout_seconds"], schema.properties, normalizedProperties);
@@ -2000,7 +2022,7 @@ function shellFallbackCommand(args: Record<string, unknown>, emittedName: string
   switch (canonicalToolName(emittedName)) {
     case "write": {
       const filePath = firstStringArg(args, ...pathCandidates());
-      const content = firstStringArgAllowEmpty(args, "fileText", "file_text", "content", "contents", "text", "fileContent", "file_content");
+      const content = firstStringArgAllowEmpty(args, ...fileContentCandidates());
       if (!filePath || content === undefined) return undefined;
       const delimiter = heredocDelimiter(content);
       return `mkdir -p "$(dirname ${shellQuote(filePath)})" && cat > ${shellQuote(filePath)} <<'${delimiter}'\n${content}\n${delimiter}`;
@@ -2016,10 +2038,10 @@ function shellFallbackCommand(args: Record<string, unknown>, emittedName: string
       return `rm -rf ${shellQuote(filePath)}`;
     }
     case "grep": {
-      const pattern = firstStringArg(args, "pattern", "query", "regex", "search");
+      const pattern = firstStringArg(args, "pattern", "query", "regex", "search", "searchPattern", "search_pattern");
       if (!pattern) return undefined;
-      const targetPath = firstStringArg(args, ...pathCandidates(), "directory") || ".";
-      const include = firstStringArg(args, "glob", "include", "includeGlob", "include_glob");
+      const targetPath = firstStringArg(args, ...pathCandidates(), "directory", "dir") || ".";
+      const include = firstStringArg(args, "glob", "include", "includeGlob", "include_glob", "fileGlob", "file_glob", "includePattern", "include_pattern");
       return ["rg", "--line-number", "--color", "never", "--hidden", include ? `--glob ${shellQuote(include)}` : "", shellQuote(pattern), shellQuote(targetPath)]
         .filter(Boolean)
         .join(" ");
@@ -2043,7 +2065,89 @@ function shellFallbackCommand(args: Record<string, unknown>, emittedName: string
 }
 
 function pathCandidates(): string[] {
-  return ["path", "file_path", "filePath", "filename", "file"];
+  return [
+    "path",
+    "file_path",
+    "filePath",
+    "filename",
+    "file",
+    "target",
+    "targetPath",
+    "target_path",
+    "targetFile",
+    "target_file",
+    "absolutePath",
+    "absolute_path",
+    "relativePath",
+    "relative_path"
+  ];
+}
+
+function fileContentCandidates(): string[] {
+  return [
+    "fileText",
+    "file_text",
+    "content",
+    "contents",
+    "text",
+    "body",
+    "data",
+    "value",
+    "newContents",
+    "new_contents",
+    "fileContent",
+    "file_content",
+    "streamContent",
+    "stream_content"
+  ];
+}
+
+function oldTextCandidates(): string[] {
+  return [
+    "oldString",
+    "old_string",
+    "old_str",
+    "oldText",
+    "old_text",
+    "oldContents",
+    "old_contents",
+    "old",
+    "search",
+    "searchString",
+    "search_string",
+    "find",
+    "findText",
+    "find_text"
+  ];
+}
+
+function newTextCandidates(): string[] {
+  return [
+    "newString",
+    "new_string",
+    "new_str",
+    "newText",
+    "new_text",
+    "newContents",
+    "new_contents",
+    "replacement",
+    "replace",
+    "replaceWith",
+    "replace_with",
+    "content"
+  ];
+}
+
+function shellCommandCandidates(): string[] {
+  return ["command", "cmd", "script", "input", "shellCommand", "shell_command", "commandLine", "command_line", "code"];
+}
+
+function shellWorkdirCandidates(): string[] {
+  return ["workingDirectory", "working_directory", "workdir", "cwd", "directory", "dir", "path", "root", "rootDir", "root_dir"];
+}
+
+function shellExplicitWorkdirCandidates(): string[] {
+  return shellWorkdirCandidates().filter((candidate) => normalizeToolName(candidate) !== "path");
 }
 
 function firstArg(args: Record<string, unknown>, keys: string[]): unknown {
@@ -2080,8 +2184,14 @@ function globPatternCandidates(options: { includeQuery?: boolean } = {}): string
   return [
     "globPattern",
     "glob_pattern",
+    "fileGlob",
+    "file_glob",
     "filePattern",
     "file_pattern",
+    "includePattern",
+    "include_pattern",
+    "pathPattern",
+    "path_pattern",
     "pattern",
     "glob",
     ...(options.includeQuery === false ? [] : ["query"]),
@@ -2092,7 +2202,25 @@ function globPatternCandidates(options: { includeQuery?: boolean } = {}): string
 }
 
 function globPathCandidates(): string[] {
-  return ["targetDirectory", "target_directory", "targeting", "directory", "cwd", "path", "root", "rootDir", "root_dir", "basePath", "base_path", "searchPath", "search_path"];
+  return [
+    "targetDirectory",
+    "target_directory",
+    "targeting",
+    "directory",
+    "dir",
+    "cwd",
+    "workdir",
+    "workingDirectory",
+    "working_directory",
+    "path",
+    "root",
+    "rootDir",
+    "root_dir",
+    "basePath",
+    "base_path",
+    "searchPath",
+    "search_path"
+  ];
 }
 
 function normalizedGlobArguments(args: Record<string, unknown>, context?: ToolCallContext): { pattern?: string; path?: string } {
@@ -2199,8 +2327,8 @@ function strReplaceEditorArguments(
   }
 
   if (emittedCanonical === "edit") {
-    const oldText = firstStringArgAllowEmpty(args, "oldString", "old_string", "old_str", "oldText", "old_text", "search", "searchString", "search_string");
-    const newText = firstStringArgAllowEmpty(args, "newString", "new_string", "new_str", "newText", "new_text", "replacement", "replace");
+    const oldText = firstStringArgAllowEmpty(args, ...oldTextCandidates());
+    const newText = firstStringArgAllowEmpty(args, ...newTextCandidates());
     if (oldText !== undefined && newText !== undefined) {
       set(["command"], "str_replace");
       set(["old_str", "oldString", "old_string", "old"], oldText);
@@ -2209,7 +2337,7 @@ function strReplaceEditorArguments(
     }
   }
 
-  const fileText = firstStringArgAllowEmpty(args, "fileText", "file_text", "content", "contents", "text", "fileContent", "file_content", "streamContent");
+  const fileText = firstStringArgAllowEmpty(args, ...fileContentCandidates());
   if (fileText !== undefined) {
     set(["command"], "create");
     set(["file_text", "fileText", "content", "contents", "text"], fileText);
@@ -2248,15 +2376,15 @@ function commandStyleFileArguments(
     [pathKey]: normalizeToolArgumentValue(path, pathKey, tool, context)
   };
   if (emittedCanonical === "write") {
-    const content = firstStringArgAllowEmpty(args, "fileText", "file_text", "content", "contents", "text", "fileContent", "file_content", "streamContent");
-    const contentKey = firstMatchingProperty(["content", "contents", "fileText", "file_text", "fileContent", "file_content", "text"], schema.properties, normalizedProperties);
+    const content = firstStringArgAllowEmpty(args, ...fileContentCandidates());
+    const contentKey = firstMatchingProperty(fileContentCandidates(), schema.properties, normalizedProperties);
     if (!contentKey || content === undefined) return undefined;
     output[contentKey] = content;
   } else if (emittedCanonical === "edit") {
-    const oldText = firstStringArgAllowEmpty(args, "oldString", "old_string", "old_str", "oldText", "old_text", "search", "searchString", "search_string");
-    const newText = firstStringArgAllowEmpty(args, "newString", "new_string", "new_str", "newText", "new_text", "replacement", "replace", "content");
-    const oldKey = firstMatchingProperty(["oldString", "old_string", "old_str", "oldText", "old_text", "old", "search", "searchString", "search_string"], schema.properties, normalizedProperties);
-    const newKey = firstMatchingProperty(["newString", "new_string", "new_str", "newText", "new_text", "replacement", "replace", "content"], schema.properties, normalizedProperties);
+    const oldText = firstStringArgAllowEmpty(args, ...oldTextCandidates());
+    const newText = firstStringArgAllowEmpty(args, ...newTextCandidates());
+    const oldKey = firstMatchingProperty(oldTextCandidates(), schema.properties, normalizedProperties);
+    const newKey = firstMatchingProperty(newTextCandidates(), schema.properties, normalizedProperties);
     if (!oldKey || !newKey || oldText === undefined || newText === undefined) return undefined;
     output[oldKey] = oldText;
     output[newKey] = newText;
@@ -2286,10 +2414,9 @@ function commandStyleFileToolSupports(canonical: string, tool: OpenAiToolSpec): 
   const normalizedProperties = new Map(schema.properties.map((property) => [normalizeToolName(property), property]));
   const has = (candidates: string[]) => Boolean(firstMatchingProperty(candidates, schema.properties, normalizedProperties));
   if (!has(operationPropertyCandidates()) || !has(pathCandidates())) return false;
-  if (canonical === "write") return has(["content", "contents", "fileText", "file_text", "fileContent", "file_content", "text"]);
+  if (canonical === "write") return has(fileContentCandidates());
   if (canonical === "edit") {
-    return has(["oldString", "old_string", "old_str", "oldText", "old_text", "old", "search", "searchString", "search_string"])
-      && has(["newString", "new_string", "new_str", "newText", "new_text", "replacement", "replace", "content"]);
+    return has(oldTextCandidates()) && has(newTextCandidates());
   }
   return true;
 }
@@ -2405,7 +2532,7 @@ function patchStyleFileArguments(
 
   let patch: string | undefined;
   if (emittedCanonical === "write") {
-    const content = firstStringArgAllowEmpty(args, "fileText", "file_text", "content", "contents", "text", "fileContent", "file_content", "streamContent");
+    const content = firstStringArgAllowEmpty(args, ...fileContentCandidates());
     if (content === undefined) return undefined;
     patch = addFilePatch(path, content);
   } else if (emittedCanonical === "edit") {
@@ -2413,8 +2540,8 @@ function patchStyleFileArguments(
     if (patchContent !== undefined) {
       patch = patchContent;
     } else {
-      const oldText = firstStringArgAllowEmpty(args, "oldString", "old_string", "old_str", "oldText", "old_text", "search", "searchString", "search_string");
-      const newText = firstStringArgAllowEmpty(args, "newString", "new_string", "new_str", "newText", "new_text", "replacement", "replace", "content");
+      const oldText = firstStringArgAllowEmpty(args, ...oldTextCandidates());
+      const newText = firstStringArgAllowEmpty(args, ...newTextCandidates());
       if (oldText === undefined || newText === undefined) return undefined;
       patch = updateFilePatch(path, oldText, newText);
     }
@@ -2617,12 +2744,12 @@ function applyRequiredToolDefaults(
   const next = { ...output };
   if (isShellLikeTool(tool, originalArgs)) {
     if (required.includes("description") && typeof next.description !== "string") {
-      const command = commandLikeValue(next, tool) ?? firstStringArg(originalArgs, "command", "cmd", "script", "input");
+      const command = commandLikeValue(next, tool) ?? firstStringArg(originalArgs, ...shellCommandCandidates());
       next.description = shellDescription(command);
     }
     const commandKey = commandLikeProperty(tool) ?? "command";
     if (required.includes(commandKey) && typeof next[commandKey] !== "string") {
-      next[commandKey] = firstStringArg(originalArgs, "command", "cmd", "script", "input") || "";
+      next[commandKey] = firstStringArg(originalArgs, ...shellCommandCandidates()) || "";
     }
   } else if (isGlobLikeToolName(normalizedTool)) {
     const normalizedProperties = new Map(required.map((property) => [normalizeToolName(property), property]));
@@ -2645,7 +2772,7 @@ function sanitizeNormalizedToolArguments(
     if (isSyntheticSdkWorkingDirectory(next[key])) delete next[key];
   }
   const commandKey = commandLikeProperty(tool) ?? "command";
-  const command = typeof next[commandKey] === "string" ? next[commandKey] : firstStringArg(originalArgs, "command", "cmd", "script", "input");
+  const command = typeof next[commandKey] === "string" ? next[commandKey] : firstStringArg(originalArgs, ...shellCommandCandidates());
   if (typeof command === "string" && shouldBackgroundShellCommand(command)) {
     next[commandKey] = backgroundShellCommand(command);
     if (typeof next.description === "string") {
@@ -2658,14 +2785,14 @@ function sanitizeNormalizedToolArguments(
 function isShellLikeTool(tool: OpenAiToolSpec | undefined, originalArgs: Record<string, unknown>): boolean {
   const normalizedTool = normalizeToolName(tool?.name || "");
   if (["bash", "shell", "terminal"].includes(normalizedTool) || canonicalToolName(tool?.name || "") === "shell") return true;
-  return Boolean(commandLikeProperty(tool) && firstStringArg(originalArgs, "command", "cmd", "script", "input"));
+  return Boolean(commandLikeProperty(tool) && firstStringArg(originalArgs, ...shellCommandCandidates()));
 }
 
 function commandLikeProperty(tool: OpenAiToolSpec | undefined): string | undefined {
   const schema = toolParameterSchema(tool);
   if (!schema.properties.length) return undefined;
   const normalizedProperties = new Map(schema.properties.map((property) => [normalizeToolName(property), property]));
-  return firstMatchingProperty(["command", "cmd", "script", "input"], schema.properties, normalizedProperties);
+  return firstMatchingProperty(shellCommandCandidates(), schema.properties, normalizedProperties);
 }
 
 function commandLikeValue(output: Record<string, unknown>, tool: OpenAiToolSpec | undefined): unknown {
@@ -2787,40 +2914,48 @@ function firstMatchingProperty(
 
 function commonArgumentAliases(normalized: string): Array<{ candidates: string[]; priority: number }> {
   const aliases: Record<string, Array<{ candidates: string[]; priority: number }>> = {
-    absolutepath: [{ candidates: ["filePath", "path", "file", "filename"], priority: 80 }],
-    commandline: [{ candidates: ["command", "cmd", "script"], priority: 80 }],
-    contents: [{ candidates: ["content", "contents", "newString", "text", "fileText", "file_text"], priority: 70 }],
-    cwd: [{ candidates: ["cwd", "directory", "path", "pattern"], priority: 45 }],
-    directory: [{ candidates: ["directory", "cwd", "path", "pattern"], priority: 45 }],
-    filetext: [{ candidates: ["content", "contents", "text", "newString", "fileText", "file_text"], priority: 95 }],
-    filepath: [{ candidates: ["filePath", "path", "file", "filename"], priority: 90 }],
-    filename: [{ candidates: ["filePath", "path", "file", "filename"], priority: 75 }],
-    filepattern: [{ candidates: ["filePattern", "file_pattern", "pattern", "glob", "query", "include"], priority: 90 }],
-    glob: [{ candidates: ["pattern", "glob", "filePattern", "file_pattern", "query", "include"], priority: 85 }],
-    globpattern: [{ candidates: ["pattern", "glob", "filePattern", "file_pattern", "query", "include"], priority: 95 }],
-    include: [{ candidates: ["include", "pattern", "glob", "filePattern", "file_pattern", "query"], priority: 70 }],
+    absolutepath: [{ candidates: pathCandidates(), priority: 80 }],
+    commandline: [{ candidates: shellCommandCandidates(), priority: 80 }],
+    contents: [{ candidates: [...fileContentCandidates(), "newString"], priority: 70 }],
+    command: [{ candidates: shellCommandCandidates(), priority: 90 }],
+    shellcommand: [{ candidates: shellCommandCandidates(), priority: 95 }],
+    code: [{ candidates: shellCommandCandidates(), priority: 60 }],
+    cwd: [{ candidates: shellWorkdirCandidates(), priority: 45 }],
+    directory: [{ candidates: [...shellWorkdirCandidates(), ...globPathCandidates()], priority: 45 }],
+    filetext: [{ candidates: [...fileContentCandidates(), "newString"], priority: 95 }],
+    filepath: [{ candidates: pathCandidates(), priority: 90 }],
+    filename: [{ candidates: pathCandidates(), priority: 75 }],
+    fileglob: [{ candidates: globPatternCandidates(), priority: 90 }],
+    filepattern: [{ candidates: globPatternCandidates(), priority: 90 }],
+    glob: [{ candidates: globPatternCandidates(), priority: 85 }],
+    globpattern: [{ candidates: globPatternCandidates(), priority: 95 }],
+    includepattern: [{ candidates: globPatternCandidates(), priority: 80 }],
+    include: [{ candidates: globPatternCandidates(), priority: 70 }],
     literal: [{ candidates: ["literal", "fixedString", "fixed_string"], priority: 90 }],
-    newcontents: [{ candidates: ["content", "newString", "replacement", "text"], priority: 85 }],
-    newstring: [{ candidates: ["newString", "newText", "new_text", "replacement", "content"], priority: 95 }],
-    newtext: [{ candidates: ["newText", "newString", "replacement", "content", "text"], priority: 85 }],
-    oldcontents: [{ candidates: ["oldString", "oldText", "old_text", "old", "search", "text"], priority: 80 }],
-    oldstring: [{ candidates: ["oldString", "oldText", "old_text", "old", "search"], priority: 95 }],
-    oldtext: [{ candidates: ["oldText", "oldString", "old", "search", "text"], priority: 85 }],
+    newcontents: [{ candidates: [...newTextCandidates(), ...fileContentCandidates()], priority: 85 }],
+    newstring: [{ candidates: newTextCandidates(), priority: 95 }],
+    newtext: [{ candidates: [...newTextCandidates(), "text"], priority: 85 }],
+    oldcontents: [{ candidates: [...oldTextCandidates(), "text"], priority: 80 }],
+    oldstring: [{ candidates: oldTextCandidates(), priority: 95 }],
+    oldtext: [{ candidates: [...oldTextCandidates(), "text"], priority: 85 }],
     pattern: [{ candidates: ["pattern", "query", "regex", "search"], priority: 80 }],
     query: [{ candidates: ["query", "pattern", "search", "prompt"], priority: 80 }],
     regex: [{ candidates: ["pattern", "regex", "query"], priority: 75 }],
-    replacement: [{ candidates: ["newString", "replacement", "content"], priority: 85 }],
-    script: [{ candidates: ["command", "script", "cmd"], priority: 75 }],
+    replacement: [{ candidates: newTextCandidates(), priority: 85 }],
+    replacewith: [{ candidates: newTextCandidates(), priority: 90 }],
+    script: [{ candidates: shellCommandCandidates(), priority: 75 }],
     search: [{ candidates: ["pattern", "query", "oldString", "search"], priority: 70 }],
     searchstring: [{ candidates: ["pattern", "query", "oldString", "search"], priority: 80 }],
-    searchpath: [{ candidates: ["searchPath", "search_path", "basePath", "base_path", "root", "rootDir", "root_dir", "directory", "cwd", "path"], priority: 80 }],
-    targetdirectory: [{ candidates: ["directory", "cwd", "path", "searchPath", "search_path", "basePath", "base_path", "root"], priority: 55 }],
-    targetfile: [{ candidates: ["filePath", "path", "file", "filename"], priority: 90 }],
+    searchpath: [{ candidates: globPathCandidates(), priority: 80 }],
+    targetdirectory: [{ candidates: globPathCandidates(), priority: 55 }],
+    target: [{ candidates: pathCandidates(), priority: 80 }],
+    targetpath: [{ candidates: pathCandidates(), priority: 90 }],
+    targetfile: [{ candidates: pathCandidates(), priority: 90 }],
     targeting: [{ candidates: ["path", "directory", "cwd", "pattern", "filePath"], priority: 45 }],
     url: [{ candidates: ["url", "uri", "href"], priority: 90 }]
   };
-  if (normalized === "workingdirectory") return [{ candidates: ["workdir", "cwd", "directory", "path"], priority: 90 }];
-  if (normalized === "cmd") return [{ candidates: ["command", "cmd", "script"], priority: 95 }];
+  if (normalized === "workingdirectory") return [{ candidates: shellWorkdirCandidates(), priority: 90 }];
+  if (normalized === "cmd") return [{ candidates: shellCommandCandidates(), priority: 95 }];
   if (normalized === "path") return [{ candidates: ["filePath", "path", "directory", "cwd", "pattern"], priority: 75 }];
   if (normalized === "prompt") return [{ candidates: ["prompt", "description", "instructions", "query"], priority: 80 }];
   if (normalized === "tasks") return [{ candidates: ["todos", "tasks", "items"], priority: 75 }];
@@ -2830,11 +2965,11 @@ function commonArgumentAliases(normalized: string): Array<{ candidates: string[]
 
 function toolSpecificArgumentAliases(tool: string, normalized: string): Array<{ candidates: string[]; priority: number }> {
   if (isGlobLikeToolName(tool)) {
-    if (["globpattern", "filepattern", "glob", "include", "pattern", "query"].includes(normalized)) {
-      return [{ candidates: ["pattern", "glob", "filePattern", "file_pattern", "query", "include"], priority: 98 }];
+    if (["globpattern", "fileglob", "filepattern", "includepattern", "glob", "include", "pattern", "query"].includes(normalized)) {
+      return [{ candidates: globPatternCandidates(), priority: 98 }];
     }
     if (["targeting", "targetdirectory", "searchpath", "basepath", "root", "rootdir", "cwd", "directory", "path"].includes(normalized)) {
-      return [{ candidates: ["path", "directory", "cwd", "searchPath", "search_path", "basePath", "base_path", "root", "rootDir", "root_dir"], priority: 40 }];
+      return [{ candidates: globPathCandidates(), priority: 40 }];
     }
   }
   if (["grep", "search", "searchfiles"].includes(tool)) {
@@ -2864,35 +2999,35 @@ function toolSpecificArgumentAliases(tool: string, normalized: string): Array<{ 
     }
   }
   if (["read", "readfile", "openfile"].includes(tool)) {
-    if (["targeting", "targetfile", "filepath", "absolutepath", "path", "file"].includes(normalized)) {
-      return [{ candidates: ["filePath", "path", "file", "filename"], priority: 95 }];
+    if (["targeting", "target", "targetpath", "targetfile", "filepath", "absolutepath", "relativepath", "path", "file"].includes(normalized)) {
+      return [{ candidates: pathCandidates(), priority: 95 }];
     }
   }
   if (["write", "writefile", "createfile"].includes(tool)) {
-    if (["targeting", "targetfile", "filepath", "absolutepath", "path", "file"].includes(normalized)) {
-      return [{ candidates: ["filePath", "path", "file", "filename"], priority: 95 }];
+    if (["targeting", "target", "targetpath", "targetfile", "filepath", "absolutepath", "relativepath", "path", "file"].includes(normalized)) {
+      return [{ candidates: pathCandidates(), priority: 95 }];
     }
-    if (["newcontents", "contents", "content", "text"].includes(normalized)) {
-      return [{ candidates: ["content", "text", "newString"], priority: 95 }];
+    if (["newcontents", "contents", "content", "text", "body", "data", "value"].includes(normalized)) {
+      return [{ candidates: fileContentCandidates(), priority: 95 }];
     }
   }
   if (["edit", "editfile", "replacefile", "searchreplace"].includes(tool)) {
-    if (["targeting", "targetfile", "filepath", "absolutepath", "path", "file"].includes(normalized)) {
-      return [{ candidates: ["filePath", "path", "file", "filename"], priority: 95 }];
+    if (["targeting", "target", "targetpath", "targetfile", "filepath", "absolutepath", "relativepath", "path", "file"].includes(normalized)) {
+      return [{ candidates: pathCandidates(), priority: 95 }];
     }
-    if (["oldstring", "oldtext", "oldcontents", "search", "searchstring"].includes(normalized)) {
-      return [{ candidates: ["oldString", "oldText", "old_text", "old", "search"], priority: 95 }];
+    if (["oldstring", "oldtext", "oldcontents", "search", "searchstring", "find", "findtext"].includes(normalized)) {
+      return [{ candidates: oldTextCandidates(), priority: 95 }];
     }
-    if (["newstring", "newtext", "newcontents", "replacement", "replace", "content"].includes(normalized)) {
-      return [{ candidates: ["newString", "newText", "new_text", "replacement", "content"], priority: 95 }];
+    if (["newstring", "newtext", "newcontents", "replacement", "replace", "replacewith", "content"].includes(normalized)) {
+      return [{ candidates: newTextCandidates(), priority: 95 }];
     }
   }
   if (["bash", "shell", "terminal", "runterminalcmd"].includes(tool)) {
-    if (["cmd", "commandline", "command", "script"].includes(normalized)) {
-      return [{ candidates: ["command", "cmd", "script"], priority: 95 }];
+    if (["cmd", "commandline", "command", "script", "shellcommand", "code"].includes(normalized)) {
+      return [{ candidates: shellCommandCandidates(), priority: 95 }];
     }
-    if (["workingdirectory", "cwd", "directory", "path", "workdir"].includes(normalized)) {
-      return [{ candidates: ["workdir", "cwd", "directory", "path"], priority: 95 }];
+    if (["workingdirectory", "cwd", "directory", "dir", "path", "workdir"].includes(normalized)) {
+      return [{ candidates: shellWorkdirCandidates(), priority: 95 }];
     }
   }
   if (["webfetch", "fetch", "web"].includes(tool)) {

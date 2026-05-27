@@ -586,7 +586,8 @@ public struct CursorSDKFrameDecoder: Sendable {
             }
             var args = CursorSDKToolSpec.decodeArgs(kind: spec.kind, payload: bytes)
             args.removeValue(forKey: "toolCallId")
-            let toolCall = CursorToolCall(name: spec.name, arguments: args)
+            let toolCall = CursorSDKToolSpec.normalizedForOpenCode(CursorToolCall(name: spec.name, arguments: args))
+            guard CursorSDKToolSpec.isEmittable(toolCall) else { continue }
             toolCalls.append(toolCall)
             return .toolCall(toolCall)
         }
@@ -612,11 +613,7 @@ public struct CursorSDKFrameDecoder: Sendable {
             }
             let argsPayload = Proto.dataField(toolFields, 1)
             var toolCall = CursorToolCall(name: spec.name, arguments: argsPayload.map { CursorSDKToolSpec.decodeArgs(kind: spec.kind, payload: $0) } ?? [:])
-            if toolCall.name.lowercased() == "edit",
-               let path = toolCall.arguments["path"]?.stringValue,
-               let streamContent = toolCall.arguments["streamContent"]?.stringValue {
-                toolCall = CursorToolCall(name: "write", arguments: ["path": .string(path), "fileText": .string(streamContent)])
-            }
+            toolCall = CursorSDKToolSpec.normalizedForOpenCode(toolCall)
             return CursorSDKToolSpec.isEmittable(toolCall) ? toolCall : nil
         }
         return nil
@@ -640,7 +637,7 @@ private final class LockedEventBuffer: @unchecked Sendable {
     }
 }
 
-private struct CursorSDKToolSpec {
+struct CursorSDKToolSpec {
     enum Kind {
         case delete
         case edit
@@ -736,16 +733,86 @@ private struct CursorSDKToolSpec {
     static func isEmittable(_ toolCall: CursorToolCall) -> Bool {
         let name = toolCall.name.lowercased()
         let args = toolCall.arguments
-        if name == "glob" || name == "ls" { return true }
-        if name == "shell" { return args["command"]?.stringValue?.isEmpty == false }
-        if name == "write" { return args["path"]?.stringValue?.isEmpty == false && args["fileText"]?.stringValue != nil }
-        if name == "edit" { return args["path"]?.stringValue?.isEmpty == false && args.keys.contains { ["patchContent", "oldText", "newText", "streamContent"].contains($0) } }
-        if name == "read" || name == "delete" { return args["path"]?.stringValue?.isEmpty == false }
-        if name == "grep" { return args["pattern"]?.stringValue?.isEmpty == false }
-        if name == "semSearch" { return args["query"]?.stringValue?.isEmpty == false }
-        if name == "readLints" { return args["paths"]?.arrayValue?.isEmpty == false }
-        if name == "mcp" { return args["toolName"]?.stringValue?.isEmpty == false || args["providerIdentifier"]?.stringValue?.isEmpty == false }
+        if name == "glob" { return hasGlobRequest(args) }
+        if name == "ls" { return true }
+        if name == "shell" { return hasString(args, keys: ["command", "cmd", "script"]) }
+        if name == "write" {
+            return hasString(args, keys: ["path", "filePath", "file_path", "targetFile", "target_file"])
+                && hasStringAllowingEmpty(args, keys: ["fileText", "file_text", "content", "contents", "text", "fileContent", "file_content", "streamContent", "stream_content"])
+        }
+        if name == "edit" {
+            let hasCompleteReplacement = hasStringAllowingEmpty(args, keys: ["oldText", "old_text", "oldString", "old_string", "old_str", "old", "search", "searchString", "search_string"])
+                && hasStringAllowingEmpty(args, keys: ["newText", "new_text", "newString", "new_string", "new_str", "replacement", "replace", "content"])
+            return hasString(args, keys: ["path", "filePath", "file_path", "targetFile", "target_file"])
+                && (hasStringAllowingEmpty(args, keys: ["patchContent", "patch_content", "patch", "diff", "unifiedDiff", "unified_diff"])
+                    || hasStringAllowingEmpty(args, keys: ["streamContent", "stream_content"])
+                    || hasCompleteReplacement)
+        }
+        if name == "read" || name == "delete" { return hasString(args, keys: ["path", "filePath", "file_path", "targetFile", "target_file"]) }
+        if name == "grep" { return hasString(args, keys: ["pattern", "query", "regex", "search"]) }
+        if name == "semsearch" { return hasString(args, keys: ["query", "pattern", "search"]) }
+        if name == "readlints" { return stringArrayValue(args["paths"]).contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } }
+        if name == "mcp" { return hasString(args, keys: ["toolName", "tool_name", "name"]) }
         return !args.isEmpty
+    }
+
+    static func normalizedForOpenCode(_ toolCall: CursorToolCall) -> CursorToolCall {
+        guard toolCall.name.lowercased() == "edit",
+              let path = stringValue(toolCall.arguments, keys: ["path"]),
+              let streamContent = firstStringValue(toolCall.arguments, keys: ["streamContent", "stream_content"]) else {
+            return toolCall
+        }
+        return CursorToolCall(name: "write", arguments: ["path": .string(path), "fileText": .string(streamContent)])
+    }
+
+    private static func hasString(_ args: [String: JSONValue], keys: [String]) -> Bool {
+        keys.contains { key in
+            guard let value = args[key]?.stringValue else { return false }
+            return !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    private static func hasStringAllowingEmpty(_ args: [String: JSONValue], keys: [String]) -> Bool {
+        keys.contains { args[$0]?.stringValue != nil }
+    }
+
+    private static func hasGlobRequest(_ args: [String: JSONValue]) -> Bool {
+        if hasString(args, keys: ["globPattern", "glob_pattern", "filePattern", "file_pattern", "pattern", "glob", "query", "include", "includeGlob", "include_glob"]) {
+            return true
+        }
+        guard let target = stringValue(args, keys: ["targetDirectory", "target_directory", "targeting", "path"]) else { return false }
+        return target.contains("*") || target.contains("?") || target.contains("[") || target.contains("]") || target.contains("{") || target.contains("}")
+    }
+
+    private static func stringValue(_ args: [String: JSONValue], keys: [String]) -> String? {
+        for key in keys {
+            guard let value = args[key]?.stringValue,
+                  !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                continue
+            }
+            return value
+        }
+        return nil
+    }
+
+    private static func firstStringValue(_ args: [String: JSONValue], keys: [String]) -> String? {
+        for key in keys {
+            if let value = args[key]?.stringValue {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private static func stringArrayValue(_ value: JSONValue?) -> [String] {
+        switch value {
+        case .array(let values):
+            return values.compactMap(\.stringValue)
+        case .string(let value):
+            return [value]
+        default:
+            return []
+        }
     }
 
     static func compact(_ input: [String: JSONValue?]) -> [String: JSONValue] {

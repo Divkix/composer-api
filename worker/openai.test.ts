@@ -1334,6 +1334,67 @@ describe("OpenAI compatibility adapter", () => {
     ]);
   });
 
+  it("maps SDK calls to generic harness schemas by reusable tool shape", () => {
+    const toolCalls = toOpenAiToolCalls({
+      responseId: "chatcmpl_test",
+      tools: [
+        {
+          name: "workspace_file",
+          parameters: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              action: { type: "string", enum: ["read", "write", "replace", "remove"] },
+              target: { type: "string" },
+              body: { type: "string" },
+              find: { type: "string" },
+              replaceWith: { type: "string" }
+            },
+            required: ["action", "target"]
+          }
+        },
+        {
+          name: "run_command",
+          parameters: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              shellCommand: { type: "string" },
+              dir: { type: "string" }
+            },
+            required: ["shellCommand"]
+          }
+        },
+        {
+          name: "discover_files",
+          parameters: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              includePattern: { type: "string" },
+              dir: { type: "string" }
+            },
+            required: ["includePattern"]
+          }
+        }
+      ],
+      toolCalls: [
+        { name: "write", arguments: { path: "src/App.tsx", fileText: "export default function App() { return null }" } },
+        { name: "edit", arguments: { path: "src/App.tsx", oldString: "return null", newString: "return <main />" } },
+        { name: "shell", arguments: { command: "npm test", workingDirectory: "src" } },
+        { name: "glob", arguments: { globPattern: "**/*.tsx", targetDirectory: "src" } }
+      ]
+    });
+
+    expect(toolCalls.map((call) => call.function.name)).toEqual(["workspace_file", "workspace_file", "run_command", "discover_files"]);
+    expect(toolCalls.map((call) => JSON.parse(call.function.arguments))).toEqual([
+      { action: "write", target: "src/App.tsx", body: "export default function App() { return null }" },
+      { action: "replace", target: "src/App.tsx", find: "return null", replaceWith: "return <main />" },
+      { shellCommand: "npm test", dir: "src" },
+      { includePattern: "**/*.tsx", dir: "src" }
+    ]);
+  });
+
   it("maps Cursor SDK MCP calls to OpenCode server_tool functions", () => {
     const toolCalls = toOpenAiToolCalls({
       responseId: "chatcmpl_test",
@@ -1670,6 +1731,92 @@ describe("OpenAI compatibility adapter", () => {
     ]);
     expect(feedback[0].result.value).toMatchObject({ path: "/tmp/project/src/App.tsx", linesCreated: 1 });
     expect(feedback[3].result.value).toMatchObject({ files: ["src/App.tsx"], totalFiles: 1 });
+  });
+
+  it("feeds generic harness tool results back with SDK builtin names from generated call ids", () => {
+    const fileText = "export default function App() { return null }";
+    const tools = [
+      {
+        name: "workspace_file",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            action: { type: "string", enum: ["read", "write", "replace", "remove"] },
+            target: { type: "string" },
+            body: { type: "string" },
+            find: { type: "string" },
+            replaceWith: { type: "string" }
+          },
+          required: ["action", "target"]
+        }
+      },
+      {
+        name: "run_command",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            shellCommand: { type: "string" },
+            dir: { type: "string" }
+          },
+          required: ["shellCommand"]
+        }
+      },
+      {
+        name: "discover_files",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            includePattern: { type: "string" },
+            dir: { type: "string" }
+          },
+          required: ["includePattern"]
+        }
+      }
+    ];
+    const generated = toOpenAiToolCalls({
+      responseId: "chatcmpl_generic",
+      tools,
+      toolCalls: [
+        { name: "write", arguments: { path: "src/App.tsx", fileText } },
+        { name: "edit", arguments: { path: "src/App.tsx", oldString: "return null", newString: "return <main />" } },
+        { name: "shell", arguments: { command: "npm test", workingDirectory: "src" } },
+        { name: "glob", arguments: { globPattern: "**/*.tsx", targetDirectory: "src" } }
+      ]
+    });
+    const prepared = prepareOpencodeSdkChatRequest(
+      {
+        model: "composer-2.5-sdk",
+        messages: [
+          { role: "user", content: "build a todo app" },
+          { role: "assistant", content: null, tool_calls: generated },
+          { role: "tool", tool_call_id: generated[0].id, content: "{\"content\":\"ok\"}" },
+          { role: "tool", tool_call_id: generated[1].id, content: "{\"diff\":\"updated\"}" },
+          { role: "tool", tool_call_id: generated[2].id, content: "{\"exitCode\":0,\"stdout\":\"ok\",\"stderr\":\"\"}" },
+          { role: "tool", tool_call_id: generated[3].id, content: "{\"files\":[\"src/App.tsx\"]}" }
+        ],
+        tools
+      },
+      { id: "composer-2.5-sdk" }
+    );
+
+    const feedback = prepared.prompt.text
+      .split("\n")
+      .filter((item) => item.startsWith("LOCAL OPENCODE TOOL RESULT: "))
+      .map((line) => JSON.parse(line.slice("LOCAL OPENCODE TOOL RESULT: ".length)));
+
+    expect(feedback.map((item) => item.name)).toEqual(["write", "edit", "shell", "glob"]);
+    expect(feedback.map((item) => item.args)).toEqual([
+      { path: "src/App.tsx", fileText },
+      { path: "src/App.tsx", oldString: "return null", newString: "return <main />" },
+      { command: "npm test", workingDirectory: "src" },
+      { targetDirectory: "src", globPattern: "**/*.tsx" }
+    ]);
+    expect(feedback[0].result.value).toMatchObject({ path: "src/App.tsx", linesCreated: 1 });
+    expect(feedback[2].result.value).toMatchObject({ exitCode: 0, stdout: "ok", stderr: "" });
+    expect(feedback[3].result.value.files).toEqual(["src/App.tsx"]);
   });
 
   it("feeds find client tool results back as completed SDK glob calls", () => {

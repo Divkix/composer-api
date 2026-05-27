@@ -1581,14 +1581,14 @@ public enum OpenAICompatibility {
         switch canonicalToolName(clientToolName) {
         case "shell":
             return compactJSON([
-                "command": firstArgument(in: arguments, keys: ["command", "cmd", "script", "input"])?.value,
-                "workingDirectory": firstArgument(in: arguments, keys: ["cwd", "workingDirectory", "working_directory", "directory", "path"])?.value,
+                "command": firstArgument(in: arguments, keys: shellCommandAliases())?.value,
+                "workingDirectory": firstArgument(in: arguments, keys: shellWorkdirAliases())?.value,
                 "timeout": sdkTimeoutArgument(firstArgument(in: arguments, keys: ["timeout", "timeoutMs", "timeout_ms", "timeoutSeconds", "timeout_seconds"]), tool: tool)
             ])
         case "write":
             return compactJSON([
                 "path": firstArgument(in: arguments, keys: pathPropertyAliases())?.value,
-                "fileText": firstArgument(in: arguments, keys: ["content", "text", "fileText", "file_text", "newString"])?.value
+                "fileText": firstArgument(in: arguments, keys: fileContentAliases() + newTextAliases())?.value
             ])
         case "read":
             return compactJSON([
@@ -1603,8 +1603,8 @@ public enum OpenAICompatibility {
         case "edit":
             return compactJSON([
                 "path": firstArgument(in: arguments, keys: pathPropertyAliases() + ["directory"])?.value,
-                "oldString": firstArgument(in: arguments, keys: ["oldString", "old_string", "old_str", "oldText", "old_text", "search", "searchString", "search_string"])?.value,
-                "newString": firstArgument(in: arguments, keys: ["newString", "new_string", "new_str", "newText", "new_text", "replacement", "replace", "content"])?.value
+                "oldString": firstArgument(in: arguments, keys: oldTextAliases())?.value,
+                "newString": firstArgument(in: arguments, keys: newTextAliases())?.value
             ])
         case "glob":
             return compactJSON([
@@ -1925,19 +1925,19 @@ public enum OpenAICompatibility {
 
         switch canonical {
         case "shell":
-            copyFirst(["command", "cmd", "script", "input"], as: [])
-            copyFirst(["workingDirectory", "working_directory", "workdir", "cwd", "directory"], as: [])
+            copyFirst(shellCommandAliases(), as: [])
+            copyFirst(shellWorkdirAliases(), as: [])
             copyFirst(["timeout", "timeoutMs", "timeout_ms", "timeoutSeconds", "timeout_seconds"], as: [])
             if let descriptionKey = propertyName(matching: ["description"], in: properties),
                output[descriptionKey] == nil {
-                let commandKey = propertyName(matching: ["command", "cmd", "script", "input"], in: properties)
+                let commandKey = propertyName(matching: shellCommandAliases(), in: properties)
                 let command = commandKey.flatMap { output[$0]?.stringValue } ?? "shell command"
                 output[descriptionKey] = .string(shellToolDescription(for: command))
             }
             fillRequiredShellArguments(&output, source: arguments, properties: properties, required: required, tool: tool)
         case "write":
             copy("path", as: pathPropertyAliases())
-            copy("fileText", as: ["file_text", "content", "contents", "text", "fileContent", "file_content"])
+            copy("fileText", as: fileContentAliases())
             copy("returnFileContentAfterWrite", as: ["returnFileContent", "return_file_content", "return_file_content_after_write"])
         case "read", "delete":
             copy("path", as: pathPropertyAliases())
@@ -1946,8 +1946,8 @@ public enum OpenAICompatibility {
             copy("includeLineNumbers", as: ["include_line_numbers", "lineNumbers", "line_numbers"])
         case "edit":
             copy("path", as: pathPropertyAliases())
-            copy("oldString", as: ["old_string", "old_str", "old", "oldText", "old_text", "search", "searchString", "search_string"])
-            copy("newString", as: ["new_string", "new_str", "newText", "new_text", "replacement", "replace", "content"])
+            copy("oldString", as: oldTextAliases())
+            copy("newString", as: newTextAliases())
         case "grep":
             copy("pattern", as: ["query", "regex", "search"])
             copy("path", as: pathPropertyAliases() + ["directory"])
@@ -2058,14 +2058,14 @@ public enum OpenAICompatibility {
     ) -> [String: JSONValue] {
         let properties = parameterPropertyNames(tool)
         guard !properties.isEmpty,
-              let commandKey = propertyName(matching: ["command", "cmd", "script", "input"], in: properties),
+              let commandKey = propertyName(matching: shellCommandAliases(), in: properties),
               let command = shellFallbackCommand(arguments, sdkToolName: sdkToolName) else {
             return arguments
         }
 
         var output: [String: JSONValue] = [commandKey: .string(command)]
-        if let workdir = firstArgument(in: arguments, keys: ["workingDirectory", "working_directory", "workdir", "cwd", "directory"])?.value,
-           let workdirKey = propertyName(matching: ["workingDirectory", "working_directory", "workdir", "cwd", "directory"], in: properties),
+        if let workdir = firstArgument(in: arguments, keys: shellExplicitWorkdirAliases())?.value,
+           let workdirKey = propertyName(matching: shellExplicitWorkdirAliases(), in: properties),
            shouldIncludeOptionalPath(workdir) {
             output[workdirKey] = workdir
         }
@@ -2105,7 +2105,7 @@ public enum OpenAICompatibility {
         switch canonicalToolName(sdkToolName) {
         case "write":
             guard let path = firstArgument(in: arguments, keys: pathPropertyAliases())?.value.stringValue,
-                  let content = firstArgument(in: arguments, keys: ["fileText", "file_text", "content", "contents", "text", "fileContent", "file_content"])?.value.stringValue else {
+                  let content = firstArgument(in: arguments, keys: fileContentAliases())?.value.stringValue else {
                 return nil
             }
             let delimiter = heredocDelimiter(for: content)
@@ -2129,12 +2129,12 @@ public enum OpenAICompatibility {
             }
             return "rm -rf \(shellSingleQuoted(path))"
         case "grep":
-            guard let pattern = firstArgument(in: arguments, keys: ["pattern", "query", "regex", "search"])?.value.stringValue else {
+            guard let pattern = firstArgument(in: arguments, keys: ["pattern", "query", "regex", "search", "searchPattern", "search_pattern"])?.value.stringValue else {
                 return nil
             }
-            let path = firstArgument(in: arguments, keys: pathPropertyAliases() + ["directory"])?.value.stringValue ?? "."
+            let path = firstArgument(in: arguments, keys: pathPropertyAliases() + ["directory", "dir"])?.value.stringValue ?? "."
             var parts = ["rg", "--line-number", "--color", "never", "--hidden"]
-            if let include = firstArgument(in: arguments, keys: ["glob", "include", "includeGlob", "include_glob"])?.value.stringValue,
+            if let include = firstArgument(in: arguments, keys: ["glob", "include", "includeGlob", "include_glob", "fileGlob", "file_glob", "includePattern", "include_pattern"])?.value.stringValue,
                !include.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 parts.append("--glob")
                 parts.append(shellSingleQuoted(include))
@@ -2192,10 +2192,10 @@ public enum OpenAICompatibility {
         tool: OpenAIToolSpec
     ) {
         guard !required.isEmpty else { return }
-        if let workdirKey = propertyName(matching: ["workingDirectory", "working_directory", "workdir", "cwd", "directory"], in: properties),
+        if let workdirKey = propertyName(matching: shellExplicitWorkdirAliases(), in: properties),
            isRequired(workdirKey, in: required),
            output[workdirKey] == nil {
-            output[workdirKey] = firstArgument(in: source, keys: ["workingDirectory", "working_directory", "workdir", "cwd", "directory"])?.value ?? .string(".")
+            output[workdirKey] = firstArgument(in: source, keys: shellExplicitWorkdirAliases())?.value ?? .string(".")
         }
         if let timeoutKey = propertyName(matching: ["timeout", "timeoutMs", "timeout_ms", "timeoutSeconds", "timeout_seconds"], in: properties),
            isRequired(timeoutKey, in: required),
@@ -2207,7 +2207,7 @@ public enum OpenAICompatibility {
         if let descriptionKey = propertyName(matching: ["description"], in: properties),
            isRequired(descriptionKey, in: required),
            output[descriptionKey] == nil {
-            let commandKey = propertyName(matching: ["command", "cmd", "script", "input"], in: properties)
+            let commandKey = propertyName(matching: shellCommandAliases(), in: properties)
             let command = commandKey.flatMap { output[$0]?.stringValue } ?? "shell command"
             output[descriptionKey] = .string(shellToolDescription(for: command))
         }
@@ -2612,16 +2612,16 @@ public enum OpenAICompatibility {
 
         switch canonical {
         case "write":
-            guard let content = firstArgument(in: arguments, keys: ["fileText", "file_text", "content", "contents", "text", "fileContent", "file_content", "streamContent"])?.value,
-                  let contentKey = propertyName(matching: ["content", "contents", "fileText", "file_text", "fileContent", "file_content", "text"], in: properties) else {
+            guard let content = firstArgument(in: arguments, keys: fileContentAliases())?.value,
+                  let contentKey = propertyName(matching: fileContentAliases(), in: properties) else {
                 return nil
             }
             output[contentKey] = content
         case "edit":
-            guard let oldText = firstArgument(in: arguments, keys: ["oldString", "old_string", "old_str", "oldText", "old_text", "search", "searchString", "search_string"])?.value,
-                  let newText = firstArgument(in: arguments, keys: ["newString", "new_string", "new_str", "newText", "new_text", "replacement", "replace", "content"])?.value,
-                  let oldKey = propertyName(matching: ["oldString", "old_string", "old_str", "oldText", "old_text", "old", "search", "searchString", "search_string"], in: properties),
-                  let newKey = propertyName(matching: ["newString", "new_string", "new_str", "newText", "new_text", "replacement", "replace", "content"], in: properties) else {
+            guard let oldText = firstArgument(in: arguments, keys: oldTextAliases())?.value,
+                  let newText = firstArgument(in: arguments, keys: newTextAliases())?.value,
+                  let oldKey = propertyName(matching: oldTextAliases(), in: properties),
+                  let newKey = propertyName(matching: newTextAliases(), in: properties) else {
                 return nil
             }
             output[oldKey] = oldText
@@ -2656,10 +2656,10 @@ public enum OpenAICompatibility {
         }
         switch canonical {
         case "write":
-            return propertyName(matching: ["content", "contents", "fileText", "file_text", "fileContent", "file_content", "text"], in: properties) != nil
+            return propertyName(matching: fileContentAliases(), in: properties) != nil
         case "edit":
-            return propertyName(matching: ["oldString", "old_string", "old_str", "oldText", "old_text", "old", "search", "searchString", "search_string"], in: properties) != nil
-                && propertyName(matching: ["newString", "new_string", "new_str", "newText", "new_text", "replacement", "replace", "content"], in: properties) != nil
+            return propertyName(matching: oldTextAliases(), in: properties) != nil
+                && propertyName(matching: newTextAliases(), in: properties) != nil
         default:
             return true
         }
@@ -2751,7 +2751,7 @@ public enum OpenAICompatibility {
         let patch: String
         switch canonical {
         case "write":
-            guard let content = firstArgument(in: arguments, keys: ["fileText", "file_text", "content", "contents", "text", "fileContent", "file_content", "streamContent"])?.value.stringValue else {
+            guard let content = firstArgument(in: arguments, keys: fileContentAliases())?.value.stringValue else {
                 return nil
             }
             patch = addFilePatch(path: path, content: content)
@@ -2759,8 +2759,8 @@ public enum OpenAICompatibility {
             if let patchContent = firstArgument(in: arguments, keys: ["patchContent", "patch_content", "patch", "diff", "unifiedDiff", "unified_diff"])?.value.stringValue {
                 patch = patchContent
             } else {
-                guard let oldText = firstArgument(in: arguments, keys: ["oldString", "old_string", "old_str", "oldText", "old_text", "search", "searchString", "search_string"])?.value.stringValue,
-                      let newText = firstArgument(in: arguments, keys: ["newString", "new_string", "new_str", "newText", "new_text", "replacement", "replace", "content"])?.value.stringValue else {
+                guard let oldText = firstArgument(in: arguments, keys: oldTextAliases())?.value.stringValue,
+                      let newText = firstArgument(in: arguments, keys: newTextAliases())?.value.stringValue else {
                     return nil
                 }
                 patch = updateFilePatch(path: path, oldText: oldText, newText: newText)
@@ -2840,17 +2840,17 @@ public enum OpenAICompatibility {
         let toolCanonical = canonicalToolName(tool.name)
         switch canonical {
         case "shell":
-            return has(["command", "cmd", "script", "input"])
+            return has(shellCommandAliases())
         case "write":
-            return has(pathPropertyAliases()) && has(["fileText", "file_text", "content", "contents", "text", "fileContent", "file_content"])
+            return has(pathPropertyAliases()) && has(fileContentAliases())
         case "read":
             return has(pathPropertyAliases())
         case "delete":
             return toolCanonical == "delete" && has(pathPropertyAliases())
         case "edit":
             return has(pathPropertyAliases())
-                && has(["oldString", "old_string", "old_str", "old", "oldText", "old_text", "search", "searchString", "search_string"])
-                && has(["newString", "new_string", "new_str", "newText", "new_text", "replacement", "replace", "content"])
+                && has(oldTextAliases())
+                && has(newTextAliases())
         case "grep":
             return has(["pattern", "query", "regex"])
         case "glob":
@@ -2943,24 +2943,24 @@ public enum OpenAICompatibility {
 
     private static func commonArgumentAliases(_ normalizedKey: String) -> [String] {
         switch normalizedKey {
-        case "absolutepath", "filepath", "filename", "targetfile", "file":
+        case "absolutepath", "relativepath", "filepath", "filename", "target", "targetpath", "targetfile", "file":
             return pathPropertyAliases()
-        case "commandline", "cmd", "command", "script":
-            return ["command", "cmd", "script", "input"]
-        case "contents", "content", "filetext", "newcontents", "newtext":
-            return ["content", "contents", "text", "fileText", "file_text", "newString", "newText", "new_text", "replacement"]
-        case "newstring", "replacement", "replace":
-            return ["newString", "newText", "new_text", "replacement", "content", "text"]
-        case "oldcontents", "oldstring", "oldtext", "searchstring":
-            return ["oldString", "oldText", "old_text", "old", "search", "text"]
-        case "glob", "globpattern", "filepattern", "include":
-            return ["include", "pattern", "glob", "filePattern", "file_pattern", "query"]
+        case "commandline", "shellcommand", "cmd", "command", "script", "code":
+            return shellCommandAliases()
+        case "contents", "content", "filetext", "body", "data", "value":
+            return fileContentAliases() + ["newString"]
+        case "newcontents", "newtext", "newstring", "replacement", "replace", "replacewith":
+            return newTextAliases() + fileContentAliases()
+        case "oldcontents", "oldstring", "oldtext", "searchstring", "find", "findtext":
+            return oldTextAliases() + ["text"]
+        case "glob", "globpattern", "fileglob", "filepattern", "includepattern", "include":
+            return globPatternAliases()
         case "literal", "fixedstring":
             return ["literal", "fixedString", "fixed_string"]
         case "pattern", "query", "regex", "search":
             return ["pattern", "query", "regex", "search", "prompt"]
-        case "targetdirectory", "targeting", "searchpath", "basepath", "root", "rootdir", "directory", "cwd", "workingdirectory", "workdir":
-            return ["path", "directory", "cwd", "workdir", "filePath", "searchPath", "search_path", "basePath", "base_path", "root", "rootDir", "root_dir", "pattern"]
+        case "targetdirectory", "targeting", "searchpath", "basepath", "root", "rootdir", "directory", "dir", "cwd", "workingdirectory", "workdir":
+            return globPathAliases() + pathPropertyAliases() + ["pattern"]
         case "prompt", "instructions":
             return ["prompt", "description", "instructions", "query"]
         case "tasks", "todo", "items":
@@ -2975,11 +2975,11 @@ public enum OpenAICompatibility {
     private static func toolSpecificArgumentAliases(toolName: String, normalizedKey: String) -> [String] {
         switch canonicalToolName(toolName) {
         case "glob":
-            if ["globpattern", "filepattern", "glob", "include", "pattern", "query"].contains(normalizedKey) {
-                return ["pattern", "glob", "filePattern", "file_pattern", "query", "include"]
+            if ["globpattern", "fileglob", "filepattern", "includepattern", "glob", "include", "pattern", "query"].contains(normalizedKey) {
+                return globPatternAliases()
             }
-            if ["targeting", "targetdirectory", "searchpath", "basepath", "root", "rootdir", "cwd", "directory", "path"].contains(normalizedKey) {
-                return ["path", "directory", "cwd", "searchPath", "search_path", "basePath", "base_path", "root", "rootDir", "root_dir"]
+            if ["targeting", "targetdirectory", "searchpath", "basepath", "root", "rootdir", "cwd", "directory", "dir", "path"].contains(normalizedKey) {
+                return globPathAliases()
             }
         case "grep":
             if ["query", "search", "searchstring", "regex", "pattern"].contains(normalizedKey) {
@@ -2992,32 +2992,32 @@ public enum OpenAICompatibility {
                 return ["literal", "fixedString", "fixed_string"]
             }
         case "read", "delete":
-            if ["targeting", "targetfile", "filepath", "absolutepath", "path", "file"].contains(normalizedKey) {
+            if ["targeting", "target", "targetpath", "targetfile", "filepath", "absolutepath", "relativepath", "path", "file"].contains(normalizedKey) {
                 return pathPropertyAliases()
             }
         case "write":
-            if ["targeting", "targetfile", "filepath", "absolutepath", "path", "file"].contains(normalizedKey) {
+            if ["targeting", "target", "targetpath", "targetfile", "filepath", "absolutepath", "relativepath", "path", "file"].contains(normalizedKey) {
                 return pathPropertyAliases()
             }
-            if ["newcontents", "contents", "content", "text", "filetext"].contains(normalizedKey) {
-                return ["content", "text", "newString", "fileText", "file_text"]
+            if ["newcontents", "contents", "content", "text", "body", "data", "value", "filetext"].contains(normalizedKey) {
+                return fileContentAliases()
             }
         case "edit":
-            if ["targeting", "targetfile", "filepath", "absolutepath", "path", "file"].contains(normalizedKey) {
+            if ["targeting", "target", "targetpath", "targetfile", "filepath", "absolutepath", "relativepath", "path", "file"].contains(normalizedKey) {
                 return pathPropertyAliases()
             }
-            if ["oldstring", "oldtext", "oldcontents", "search", "searchstring"].contains(normalizedKey) {
-                return ["oldString", "oldText", "old_text", "old", "search"]
+            if ["oldstring", "oldtext", "oldcontents", "search", "searchstring", "find", "findtext"].contains(normalizedKey) {
+                return oldTextAliases()
             }
-            if ["newstring", "newtext", "newcontents", "replacement", "replace", "content"].contains(normalizedKey) {
-                return ["newString", "newText", "new_text", "replacement", "content"]
+            if ["newstring", "newtext", "newcontents", "replacement", "replace", "replacewith", "content"].contains(normalizedKey) {
+                return newTextAliases()
             }
         case "shell":
-            if ["cmd", "commandline", "command", "script"].contains(normalizedKey) {
-                return ["command", "cmd", "script", "input"]
+            if ["cmd", "commandline", "command", "script", "shellcommand", "code"].contains(normalizedKey) {
+                return shellCommandAliases()
             }
-            if ["workingdirectory", "cwd", "directory", "path", "workdir"].contains(normalizedKey) {
-                return ["workdir", "cwd", "directory", "path"]
+            if ["workingdirectory", "cwd", "directory", "dir", "path", "workdir"].contains(normalizedKey) {
+                return shellWorkdirAliases()
             }
         case "todowrite":
             if ["todos", "tasks", "items"].contains(normalizedKey) {
@@ -3093,11 +3093,51 @@ public enum OpenAICompatibility {
     }
 
     private static func pathPropertyAliases() -> [String] {
-        ["path", "file_path", "filePath", "filename", "file"]
+        [
+            "path", "file_path", "filePath", "filename", "file",
+            "target", "targetPath", "target_path", "targetFile", "target_file",
+            "absolutePath", "absolute_path", "relativePath", "relative_path"
+        ]
+    }
+
+    private static func fileContentAliases() -> [String] {
+        [
+            "fileText", "file_text", "content", "contents", "text", "body", "data", "value",
+            "newContents", "new_contents", "fileContent", "file_content", "streamContent", "stream_content"
+        ]
+    }
+
+    private static func oldTextAliases() -> [String] {
+        [
+            "oldString", "old_string", "old_str", "oldText", "old_text", "oldContents", "old_contents",
+            "old", "search", "searchString", "search_string", "find", "findText", "find_text"
+        ]
+    }
+
+    private static func newTextAliases() -> [String] {
+        [
+            "newString", "new_string", "new_str", "newText", "new_text", "newContents", "new_contents",
+            "replacement", "replace", "replaceWith", "replace_with", "content"
+        ]
+    }
+
+    private static func shellCommandAliases() -> [String] {
+        ["command", "cmd", "script", "input", "shellCommand", "shell_command", "commandLine", "command_line", "code"]
+    }
+
+    private static func shellWorkdirAliases() -> [String] {
+        ["workingDirectory", "working_directory", "workdir", "cwd", "directory", "dir", "path", "root", "rootDir", "root_dir"]
+    }
+
+    private static func shellExplicitWorkdirAliases() -> [String] {
+        shellWorkdirAliases().filter { normalizedName($0) != "path" }
     }
 
     private static func globPatternAliases(includeQuery: Bool = true) -> [String] {
-        var aliases = ["globPattern", "glob_pattern", "filePattern", "file_pattern", "pattern", "glob"]
+        var aliases = [
+            "globPattern", "glob_pattern", "fileGlob", "file_glob", "filePattern", "file_pattern",
+            "includePattern", "include_pattern", "pathPattern", "path_pattern", "pattern", "glob"
+        ]
         if includeQuery {
             aliases.append("query")
         }
@@ -3106,7 +3146,11 @@ public enum OpenAICompatibility {
     }
 
     private static func globPathAliases() -> [String] {
-        ["targetDirectory", "target_directory", "targeting", "directory", "cwd", "path", "root", "rootDir", "root_dir", "basePath", "base_path", "searchPath", "search_path"]
+        [
+            "targetDirectory", "target_directory", "targeting", "directory", "dir", "cwd", "workdir",
+            "workingDirectory", "working_directory", "path", "root", "rootDir", "root_dir",
+            "basePath", "base_path", "searchPath", "search_path"
+        ]
     }
 
     private static func normalizedName(_ value: String) -> String {

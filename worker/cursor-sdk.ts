@@ -575,8 +575,8 @@ function decodeToolCallUpdate(payload: Uint8Array, completed: boolean): LocalSdk
   const callId = stringField(fields, 1) || stableToolCallId(payload);
   const toolCallBytes = bytesField(fields, 2);
   if (!toolCallBytes) return null;
-    const decoded = decodeSdkToolCall(toolCallBytes);
-    if (!decoded || (completed && decoded.hasResult)) return null;
+  const decoded = decodeSdkToolCall(toolCallBytes);
+  if (!decoded || (completed && decoded.hasResult)) return null;
   return { type: "tool_call", id: callId, toolCall: normalizeSdkToolCallForOpenCode(decoded.toolCall) };
 }
 
@@ -621,7 +621,7 @@ function decodeExecServerToolCall(payload: Uint8Array, fields = decodeProtobufFi
 function normalizeSdkToolCallForOpenCode(toolCall: CursorToolCall): CursorToolCall {
   if (toolCall.name.toLowerCase() !== "edit") return toolCall;
   const path = stringArg(toolCall.arguments, "path");
-  const streamContent = stringArg(toolCall.arguments, "streamContent");
+  const streamContent = stringArgAllowEmpty(toolCall.arguments, "streamContent", "stream_content");
   if (!path || streamContent === undefined) return toolCall;
   return {
     name: "write",
@@ -711,24 +711,29 @@ function decodeToolArgs(kind: ArgsKind, payload: Uint8Array): Record<string, unk
 function isEmittableSdkToolCall(toolCall: CursorToolCall): boolean {
   const name = toolCall.name.toLowerCase();
   const args = toolCall.arguments ?? {};
-  if (name === "glob") return true;
+  if (name === "glob") return hasGlobRequest(args);
   if (name === "ls") return true;
-  if (name === "shell") return hasStringArg(args, "command");
-  if (name === "write") return hasStringArg(args, "path") && hasStringArgAllowEmpty(args, "fileText");
+  if (name === "shell") return hasAnyStringArg(args, "command", "cmd", "script");
+  if (name === "write") {
+    return hasAnyStringArg(args, "path", "filePath", "file_path", "targetFile", "target_file") &&
+      hasAnyStringArgAllowEmpty(args, "fileText", "file_text", "content", "contents", "text", "fileContent", "file_content", "streamContent", "stream_content");
+  }
   if (name === "edit") {
     const hasCompleteReplacement =
-      (hasStringArgAllowEmpty(args, "oldText") || hasStringArgAllowEmpty(args, "oldString")) &&
-      (hasStringArgAllowEmpty(args, "newText") || hasStringArgAllowEmpty(args, "newString"));
+      hasAnyStringArgAllowEmpty(args, "oldText", "old_text", "oldString", "old_string", "old_str", "old", "search", "searchString", "search_string") &&
+      hasAnyStringArgAllowEmpty(args, "newText", "new_text", "newString", "new_string", "new_str", "replacement", "replace", "content");
     return (
-      hasStringArg(args, "path") &&
-      (hasStringArgAllowEmpty(args, "patchContent") || hasStringArgAllowEmpty(args, "streamContent") || hasCompleteReplacement)
+      hasAnyStringArg(args, "path", "filePath", "file_path", "targetFile", "target_file") &&
+      (hasAnyStringArgAllowEmpty(args, "patchContent", "patch_content", "patch", "diff", "unifiedDiff", "unified_diff") ||
+        hasAnyStringArgAllowEmpty(args, "streamContent", "stream_content") ||
+        hasCompleteReplacement)
     );
   }
-  if (name === "read" || name === "delete") return hasStringArg(args, "path");
-  if (name === "grep") return hasStringArg(args, "pattern");
-  if (name === "semSearch") return hasStringArg(args, "query");
+  if (name === "read" || name === "delete") return hasAnyStringArg(args, "path", "filePath", "file_path", "targetFile", "target_file");
+  if (name === "grep") return hasAnyStringArg(args, "pattern", "query", "regex", "search");
+  if (name === "semSearch") return hasAnyStringArg(args, "query", "pattern", "search");
   if (name === "readLints") return Array.isArray(args.paths) && args.paths.some((item) => typeof item === "string" && item.trim());
-  if (name === "mcp") return hasStringArg(args, "toolName") || hasStringArg(args, "providerIdentifier");
+  if (name === "mcp") return hasAnyStringArg(args, "toolName", "tool_name", "name");
   return Object.keys(args).length > 0;
 }
 
@@ -736,8 +741,28 @@ function hasStringArg(args: Record<string, unknown>, key: string): boolean {
   return typeof args[key] === "string" && args[key].trim().length > 0;
 }
 
-function hasStringArgAllowEmpty(args: Record<string, unknown>, key: string): boolean {
-  return typeof args[key] === "string";
+function hasAnyStringArg(args: Record<string, unknown>, ...keys: string[]): boolean {
+  return keys.some((key) => hasStringArg(args, key));
+}
+
+function hasAnyStringArgAllowEmpty(args: Record<string, unknown>, ...keys: string[]): boolean {
+  return keys.some((key) => typeof args[key] === "string");
+}
+
+function hasGlobRequest(args: Record<string, unknown>): boolean {
+  if (hasAnyStringArg(args, "globPattern", "glob_pattern", "filePattern", "file_pattern", "pattern", "glob", "query", "include", "includeGlob", "include_glob")) {
+    return true;
+  }
+  const target = stringArg(args, "targetDirectory") || stringArg(args, "target_directory") || stringArg(args, "targeting") || stringArg(args, "path");
+  return target !== undefined && /[*?[\]{}]/.test(target);
+}
+
+function stringArgAllowEmpty(args: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = args[key];
+    if (typeof value === "string") return value;
+  }
+  return undefined;
 }
 
 function sdkPrompt(prompt: { text: string; images?: CursorImage[] }): string {

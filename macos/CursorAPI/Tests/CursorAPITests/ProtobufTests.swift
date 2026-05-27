@@ -115,6 +115,36 @@ final class ProtobufTests: XCTestCase {
         XCTAssertEqual(args["overwrite"], .bool(true))
     }
 
+    func testSDKToolCallEmissionRequiresCompleteExecutableArguments() {
+        XCTAssertFalse(CursorSDKToolSpec.isEmittable(CursorToolCall(name: "glob", arguments: [:])))
+        XCTAssertFalse(CursorSDKToolSpec.isEmittable(CursorToolCall(name: "glob", arguments: ["targetDirectory": .string("src")])))
+        XCTAssertTrue(CursorSDKToolSpec.isEmittable(CursorToolCall(name: "glob", arguments: ["globPattern": .string("**/*.tsx")])))
+        XCTAssertTrue(CursorSDKToolSpec.isEmittable(CursorToolCall(name: "glob", arguments: ["targetDirectory": .string("src/**/*.tsx")])))
+
+        XCTAssertFalse(CursorSDKToolSpec.isEmittable(CursorToolCall(name: "edit", arguments: ["path": .string("src/App.tsx"), "oldText": .string("old")])))
+        XCTAssertFalse(CursorSDKToolSpec.isEmittable(CursorToolCall(name: "edit", arguments: ["path": .string("src/App.tsx"), "newText": .string("new")])))
+        XCTAssertTrue(CursorSDKToolSpec.isEmittable(CursorToolCall(name: "edit", arguments: ["path": .string("src/App.tsx"), "oldText": .string(""), "newText": .string("new")])))
+        XCTAssertTrue(CursorSDKToolSpec.isEmittable(CursorToolCall(name: "edit", arguments: ["filePath": .string("src/App.tsx"), "old_str": .string("old"), "replacement": .string("")])))
+        XCTAssertTrue(CursorSDKToolSpec.isEmittable(CursorToolCall(name: "edit", arguments: ["path": .string("src/App.tsx"), "patch_content": .string("")])))
+
+        XCTAssertFalse(CursorSDKToolSpec.isEmittable(CursorToolCall(name: "write", arguments: ["path": .string("empty.txt")])))
+        XCTAssertTrue(CursorSDKToolSpec.isEmittable(CursorToolCall(name: "write", arguments: ["path": .string("empty.txt"), "fileText": .string("")])))
+        XCTAssertTrue(CursorSDKToolSpec.isEmittable(CursorToolCall(name: "write", arguments: ["filePath": .string("empty.txt"), "content": .string("")])))
+
+        XCTAssertFalse(CursorSDKToolSpec.isEmittable(CursorToolCall(name: "mcp", arguments: ["providerIdentifier": .string("filesystem")])))
+        XCTAssertTrue(CursorSDKToolSpec.isEmittable(CursorToolCall(name: "mcp", arguments: ["providerIdentifier": .string("filesystem"), "toolName": .string("write_file")])))
+    }
+
+    func testSDKStreamingEditNormalizationSupportsSnakeCaseAndEmptyContent() {
+        let normalized = CursorSDKToolSpec.normalizedForOpenCode(
+            CursorToolCall(name: "edit", arguments: ["path": .string("scripts/empty.mjs"), "stream_content": .string("")])
+        )
+
+        XCTAssertEqual(normalized.name, "write")
+        XCTAssertEqual(normalized.arguments["path"], .string("scripts/empty.mjs"))
+        XCTAssertEqual(normalized.arguments["fileText"], .string(""))
+    }
+
     func testNativeTransportConsumesRequestContextBeforeTurnEndDetection() {
         let context = CursorSDKProto.requestContextResult(id: 42, execID: "exec-1")
         let fields = Proto.decodeFields(context)
