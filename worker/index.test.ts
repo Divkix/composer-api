@@ -157,7 +157,7 @@ describe("Worker", () => {
       choices: [
         {
           message: {
-            tool_calls: [{ type: "function", function: { name: "glob", arguments: "{\"pattern\":\"*.ts\"}" } }]
+            tool_calls: [{ type: "function", function: { name: "glob", arguments: "{\"pattern\":\"**/*.ts\"}" } }]
           },
           finish_reason: "tool_calls"
         }
@@ -1135,7 +1135,7 @@ describe("Worker", () => {
     expect(body.output.find((item) => item.type === "function_call")).toMatchObject({
       type: "function_call",
       name: "glob",
-      arguments: "{\"pattern\":\"*.ts\"}"
+      arguments: "{\"pattern\":\"**/*.ts\"}"
     });
   });
 
@@ -1174,7 +1174,7 @@ describe("Worker", () => {
     expect(body).toContain("event: response.function_call_arguments.delta");
     expect(body).toContain("event: response.output_item.done");
     expect(body).toContain("\"name\":\"glob\"");
-    expect(body).toContain("{\\\"pattern\\\":\\\"*.ts\\\"}");
+    expect(body).toContain("{\\\"pattern\\\":\\\"**/*.ts\\\"}");
   });
 
   it("streams SSE chat chunks in legacy cmp_ proxy mode and still writes a request log", async () => {

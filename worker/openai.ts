@@ -17,12 +17,17 @@ export interface PreparedRequest {
   previousResponseId?: string;
   storeResponse?: boolean;
   responseInputItems?: unknown[];
+  toolContext?: ToolCallContext;
 }
 
 export interface OpenAiToolSpec {
   name: string;
   description?: string;
   parameters?: unknown;
+}
+
+export interface ToolCallContext {
+  workingDirectory?: string;
 }
 
 export interface OpenAiToolCall {
@@ -110,6 +115,7 @@ export function prepareChatRequest(body: unknown, cursorModel: { id: string } | 
   }
 
   const tools = record.tool_choice === "none" ? [] : parseChatTools(record.tools);
+  const toolContext = toolCallContextFromMessages(messages);
   const agentMode = options.forceAgentMode === true || tools.length > 0;
   const model = typeof record.model === "string" && record.model.trim() ? record.model.trim() : "composer-2.5";
   const workspaceMutationRequired = hasWorkspaceMutationIntent(messages) && hasWorkspaceMutationCapability(tools);
@@ -152,7 +158,8 @@ export function prepareChatRequest(body: unknown, cursorModel: { id: string } | 
     },
     tools,
     requiresLocalTool: false,
-    storeResponse: false
+    storeResponse: false,
+    toolContext
   };
 }
 
@@ -165,6 +172,7 @@ export function prepareOpencodeSdkChatRequest(body: unknown, cursorModel: { id: 
   }
 
   const tools = record.tool_choice === "none" ? [] : parseChatTools(record.tools);
+  const toolContext = toolCallContextFromMessages(messages);
   const model = typeof record.model === "string" && record.model.trim() ? record.model.trim() : "composer-2.5";
   const workspaceMutationRequired = hasWorkspaceMutationIntent(messages) && hasWorkspaceMutationCapability(tools);
   const workspaceMutationDone = workspaceMutationRequired && hasWorkspaceMutationToolCall(messages, tools);
@@ -219,7 +227,8 @@ export function prepareOpencodeSdkChatRequest(body: unknown, cursorModel: { id: 
     },
     tools,
     requiresLocalTool: workspaceMutationRequired && !workspaceMutationDone,
-    storeResponse: false
+    storeResponse: false,
+    toolContext
   };
 }
 
@@ -235,6 +244,7 @@ export function prepareResponsesRequest(
   }
 
   const tools = record.tool_choice === "none" ? [] : parseChatTools(record.tools);
+  const toolContext = toolCallContextFromResponseInput(record.input, record.instructions);
   const model = typeof record.model === "string" && record.model.trim() ? record.model.trim() : "composer-2.5";
   const latestUserText = latestUserTextFromResponseInput(record.input);
   const workspaceMutationRequired = hasResponseWorkspaceMutationIntent(record.input) && hasWorkspaceMutationCapability(tools);
@@ -275,7 +285,8 @@ export function prepareResponsesRequest(
     requiresLocalTool: false,
     previousResponseId,
     storeResponse,
-    responseInputItems: normalizedResponseInputItems(record.input)
+    responseInputItems: normalizedResponseInputItems(record.input),
+    toolContext
   };
 }
 
@@ -634,6 +645,7 @@ export function toOpenAiToolCalls(input: {
   tools?: OpenAiToolSpec[];
   responseId: string;
   startIndex?: number;
+  context?: ToolCallContext;
 }): OpenAiToolCall[] {
   const tools = input.tools ?? [];
   return input.toolCalls.flatMap((toolCall, offset) => {
@@ -642,7 +654,7 @@ export function toOpenAiToolCalls(input: {
     const tool = resolveToolSpec(normalizedToolCall.name, normalizedToolCall.arguments ?? {}, tools);
     if (!tool && tools.length > 0) return [];
     const name = tool?.name ?? normalizedToolCall.name;
-    const toolArguments = normalizeToolArguments(normalizedToolCall.arguments ?? {}, tool, normalizedToolCall.name);
+    const toolArguments = normalizeToolArguments(normalizedToolCall.arguments ?? {}, tool, normalizedToolCall.name, 0, input.context);
     return [{
       id: `call_${input.responseId.replace(/[^A-Za-z0-9]/g, "").slice(-18)}_${index}`,
       type: "function",
@@ -1338,6 +1350,49 @@ function contentToPlainText(content: unknown): string {
   return parts.join("\n");
 }
 
+function toolCallContextFromMessages(messages: unknown[]): ToolCallContext | undefined {
+  const workingDirectory = messages
+    .map((message) => isRecord(message) ? contentToPlainText(message.content) : "")
+    .map(workingDirectoryFromText)
+    .find(Boolean);
+  return workingDirectory ? { workingDirectory } : undefined;
+}
+
+function toolCallContextFromResponseInput(input: unknown, instructions: unknown): ToolCallContext | undefined {
+  const texts: string[] = [];
+  if (typeof instructions === "string") texts.push(instructions);
+  for (const item of responseInputArray(input)) {
+    if (typeof item === "string") {
+      texts.push(item);
+    } else if (isRecord(item)) {
+      texts.push(contentToPlainText(item.content));
+      if (typeof item.instructions === "string") texts.push(item.instructions);
+    }
+  }
+  const workingDirectory = texts.map(workingDirectoryFromText).find(Boolean);
+  return workingDirectory ? { workingDirectory } : undefined;
+}
+
+function workingDirectoryFromText(text: string): string | undefined {
+  for (const pattern of [
+    /^\s*Working directory:\s*(.+)$/im,
+    /^\s*Current working directory:\s*(.+)$/im,
+    /^\s*Workspace root folder:\s*(.+)$/im,
+    /^\s*Workspace root:\s*(.+)$/im
+  ]) {
+    const match = pattern.exec(text);
+    const value = sanitizeContextPath(match?.[1]);
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function sanitizeContextPath(value: string | undefined): string | undefined {
+  const trimmed = value?.trim().replace(/^["']|["']$/g, "");
+  if (!trimmed || trimmed === "." || trimmed.toLowerCase() === "undefined" || trimmed.toLowerCase() === "null") return undefined;
+  return trimmed;
+}
+
 function rememberOpenCodeToolCalls(toolCalls: unknown[], output: Map<string, { name: string; args: Record<string, unknown> }>) {
   for (const toolCall of toolCalls) {
     if (!isRecord(toolCall) || typeof toolCall.id !== "string") continue;
@@ -1723,7 +1778,13 @@ function canonicalToolName(value: string): string {
   return normalized;
 }
 
-function normalizeToolArguments(args: Record<string, unknown>, tool: OpenAiToolSpec | undefined, emittedName = "", wrapperDepth = 0): Record<string, unknown> {
+function normalizeToolArguments(
+  args: Record<string, unknown>,
+  tool: OpenAiToolSpec | undefined,
+  emittedName = "",
+  wrapperDepth = 0,
+  context?: ToolCallContext
+): Record<string, unknown> {
   const schema = toolParameterSchema(tool);
   const emittedCanonical = canonicalToolName(emittedName);
   const selectedCanonical = canonicalToolName(tool?.name || "");
@@ -1735,18 +1796,18 @@ function normalizeToolArguments(args: Record<string, unknown>, tool: OpenAiToolS
     ? expandToolArguments(recordArgumentValue(args.args) ?? {})
     : expandToolArguments(args);
   if (!schema.properties.length) return argsToNormalize;
-  const wrapperObjectArguments = normalizeWrapperObjectArguments(argsToNormalize, tool, emittedName, schema, wrapperDepth);
+  const wrapperObjectArguments = normalizeWrapperObjectArguments(argsToNormalize, tool, emittedName, schema, wrapperDepth, context);
   if (wrapperObjectArguments) {
     return wrapperObjectArguments;
   }
   if (selectedTool === "strreplaceeditor") {
     return strReplaceEditorArguments(argsToNormalize, emittedCanonical, tool);
   }
-  const commandStyleFile = commandStyleFileArguments(argsToNormalize, emittedCanonical, tool);
+  const commandStyleFile = commandStyleFileArguments(argsToNormalize, emittedCanonical, tool, context);
   if (commandStyleFile) {
     return commandStyleFile;
   }
-  const patchStyleFile = patchStyleFileArguments(argsToNormalize, emittedCanonical, tool);
+  const patchStyleFile = patchStyleFileArguments(argsToNormalize, emittedCanonical, tool, context);
   if (patchStyleFile) {
     return patchStyleFile;
   }
@@ -1754,10 +1815,10 @@ function normalizeToolArguments(args: Record<string, unknown>, tool: OpenAiToolS
     return shellFallbackArguments(argsToNormalize, emittedName, tool);
   }
   if (emittedCanonical === "ls" && selectedCanonical === "glob") {
-    return listAsGlobArguments(argsToNormalize, tool);
+    return listAsGlobArguments(argsToNormalize, tool, context);
   }
   if (emittedCanonical === "glob" && selectedCanonical === "glob") {
-    return globArguments(argsToNormalize, tool);
+    return globArguments(argsToNormalize, tool, context);
   }
 
   const normalizedProperties = new Map(schema.properties.map((property) => [normalizeToolName(property), property]));
@@ -1771,7 +1832,7 @@ function normalizeToolArguments(args: Record<string, unknown>, tool: OpenAiToolS
     }
     const previous = priorities.get(mapped.target) ?? -1;
     if (mapped.priority >= previous) {
-      output[mapped.target] = value;
+      output[mapped.target] = normalizeToolArgumentValue(value, mapped.target, tool, context);
       priorities.set(mapped.target, mapped.priority);
     }
   }
@@ -1961,22 +2022,55 @@ function globPatternCandidates(options: { includeQuery?: boolean } = {}): string
 }
 
 function globPathCandidates(): string[] {
-  return ["targetDirectory", "target_directory", "directory", "cwd", "path", "root", "rootDir", "root_dir", "basePath", "base_path", "searchPath", "search_path"];
+  return ["targetDirectory", "target_directory", "targeting", "directory", "cwd", "path", "root", "rootDir", "root_dir", "basePath", "base_path", "searchPath", "search_path"];
 }
 
-function normalizedGlobArguments(args: Record<string, unknown>): { pattern?: string; path?: string } {
+function normalizedGlobArguments(args: Record<string, unknown>, context?: ToolCallContext): { pattern?: string; path?: string } {
   let pattern = firstStringArg(args, ...globPatternCandidates());
   let targetPath = firstStringArg(args, ...globPathCandidates());
-  if (targetPath && looksLikeGlobPattern(targetPath) && !looksLikeGlobPattern(pattern || "")) {
-    const nextPattern = targetPath;
-    targetPath = pattern;
-    pattern = nextPattern;
+  if (targetPath) targetPath = absolutizeToolPath(targetPath, context);
+  if (targetPath && looksLikeGlobPattern(targetPath)) {
+    if (pattern && !looksLikeGlobPattern(pattern) && looksLikePath(pattern)) {
+      const nextPattern = targetPath;
+      targetPath = absolutizeToolPath(pattern, context);
+      pattern = nextPattern;
+    } else {
+      const split = splitGlobTargetPath(targetPath);
+      targetPath = split.path;
+      pattern = combineGlobPatterns(split.pattern, pattern);
+    }
   }
   return { pattern, path: targetPath };
 }
 
 function looksLikeGlobPattern(value: string): boolean {
   return /[*?[\]{}]/.test(value.trim());
+}
+
+function looksLikePath(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed.startsWith("/") || trimmed.startsWith("./") || trimmed.startsWith("../") || trimmed.includes("/");
+}
+
+function splitGlobTargetPath(value: string): { path?: string; pattern?: string } {
+  const trimmed = value.trim();
+  const firstGlob = trimmed.search(/[*?[\]{}]/);
+  if (firstGlob < 0) return { path: trimmed };
+  const slash = trimmed.lastIndexOf("/", firstGlob);
+  const base = slash > 0 ? trimmed.slice(0, slash) : slash === 0 ? "/" : "";
+  const pattern = trimmed.slice(slash + 1).replace(/^\/+/, "");
+  return { path: base || undefined, pattern: pattern || undefined };
+}
+
+function combineGlobPatterns(targetPattern: string | undefined, pattern: string | undefined): string | undefined {
+  const cleanTarget = targetPattern?.replace(/^\/+|\/+$/g, "");
+  const cleanPattern = pattern?.replace(/^\/+/, "");
+  if (!cleanTarget) return cleanPattern;
+  if (!cleanPattern) return cleanTarget;
+  if (cleanTarget === "**") return cleanPattern === "*" ? "**/*" : `**/${cleanPattern}`;
+  if (cleanTarget === "*") return cleanPattern;
+  if (cleanPattern === "*") return cleanTarget;
+  return cleanPattern;
 }
 
 function heredocDelimiter(content: string): string {
@@ -1987,7 +2081,7 @@ function heredocDelimiter(content: string): string {
   return `API_FOR_CURSOR_EOF_${hashString(content)}`;
 }
 
-function listAsGlobArguments(args: Record<string, unknown>, tool: OpenAiToolSpec | undefined): Record<string, unknown> {
+function listAsGlobArguments(args: Record<string, unknown>, tool: OpenAiToolSpec | undefined, context?: ToolCallContext): Record<string, unknown> {
   const schema = toolParameterSchema(tool);
   const normalizedProperties = new Map(schema.properties.map((property) => [normalizeToolName(property), property]));
   const output: Record<string, unknown> = {};
@@ -1995,19 +2089,19 @@ function listAsGlobArguments(args: Record<string, unknown>, tool: OpenAiToolSpec
   if (patternKey) output[patternKey] = Object.keys(args).length ? "*" : "**/*";
   const path = firstArg(args, globPathCandidates());
   const pathKey = firstMatchingProperty(globPathCandidates(), schema.properties, normalizedProperties);
-  if (pathKey && shouldIncludeOptionalPath(path)) output[pathKey] = path;
+  if (pathKey && shouldIncludeOptionalPath(path)) output[pathKey] = normalizeToolArgumentValue(path, pathKey, tool, context);
   return Object.keys(output).length ? output : args;
 }
 
-function globArguments(args: Record<string, unknown>, tool: OpenAiToolSpec | undefined): Record<string, unknown> {
+function globArguments(args: Record<string, unknown>, tool: OpenAiToolSpec | undefined, context?: ToolCallContext): Record<string, unknown> {
   const schema = toolParameterSchema(tool);
   const normalizedProperties = new Map(schema.properties.map((property) => [normalizeToolName(property), property]));
   const output: Record<string, unknown> = {};
-  const { pattern, path } = normalizedGlobArguments(args);
+  const { pattern, path } = normalizedGlobArguments(args, context);
   const patternKey = firstMatchingProperty(globPatternCandidates(), schema.properties, normalizedProperties);
   if (patternKey) output[patternKey] = pattern || "*";
   const pathKey = firstMatchingProperty(globPathCandidates(), schema.properties, normalizedProperties);
-  if (pathKey && shouldIncludeOptionalPath(path)) output[pathKey] = path;
+  if (pathKey && shouldIncludeOptionalPath(path)) output[pathKey] = normalizeToolArgumentValue(path, pathKey, tool, context);
   return Object.keys(output).length ? output : args;
 }
 
@@ -2067,7 +2161,8 @@ function viewRangeFromArgs(args: Record<string, unknown>): number[] | undefined 
 function commandStyleFileArguments(
   args: Record<string, unknown>,
   emittedCanonical: string,
-  tool: OpenAiToolSpec | undefined
+  tool: OpenAiToolSpec | undefined,
+  context?: ToolCallContext
 ): Record<string, unknown> | undefined {
   if (!["write", "read", "edit", "delete"].includes(emittedCanonical)) return undefined;
   const schema = toolParameterSchema(tool);
@@ -2080,7 +2175,7 @@ function commandStyleFileArguments(
 
   const output: Record<string, unknown> = {
     [operationKey]: operationValue(tool, operationKey, emittedCanonical),
-    [pathKey]: path
+    [pathKey]: normalizeToolArgumentValue(path, pathKey, tool, context)
   };
   if (emittedCanonical === "write") {
     const content = firstStringArgAllowEmpty(args, "fileText", "file_text", "content", "contents", "text", "fileContent", "file_content", "streamContent");
@@ -2160,10 +2255,49 @@ function toolPropertySchema(tool: OpenAiToolSpec | undefined, property: string):
   return properties?.[property];
 }
 
+function normalizeToolArgumentValue(value: unknown, targetProperty: string, tool: OpenAiToolSpec | undefined, context?: ToolCallContext): unknown {
+  if (typeof value !== "string") return value;
+  if (!toolPropertyPrefersAbsolutePath(tool, targetProperty)) return value;
+  return absolutizeToolPath(value, context);
+}
+
+function toolPropertyPrefersAbsolutePath(tool: OpenAiToolSpec | undefined, property: string): boolean {
+  const schema = toolPropertySchema(tool, property);
+  const description = isRecord(schema) && typeof schema.description === "string" ? schema.description.toLowerCase() : "";
+  if (description.includes("absolute path")) return true;
+  const normalizedProperty = normalizeToolName(property);
+  const canonical = canonicalToolName(tool?.name || "");
+  return ["read", "write", "edit", "delete"].includes(canonical) && ["filepath", "absolutepath"].includes(normalizedProperty);
+}
+
+function absolutizeToolPath(value: string, context?: ToolCallContext): string {
+  const trimmed = value.trim();
+  if (!trimmed || /^(?:[a-z][a-z0-9+.-]*:|~|\$)/i.test(trimmed)) return trimmed;
+  if (trimmed.startsWith("/")) return normalizePosixPath(trimmed);
+  const base = sanitizeContextPath(context?.workingDirectory);
+  if (!base || !base.startsWith("/")) return trimmed;
+  return normalizePosixPath(`${base.replace(/\/+$/, "")}/${trimmed}`);
+}
+
+function normalizePosixPath(value: string): string {
+  if (!value.startsWith("/")) return value.replace(/\/{2,}/g, "/");
+  const parts: string[] = [];
+  for (const part of value.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  return `/${parts.join("/")}`;
+}
+
 function patchStyleFileArguments(
   args: Record<string, unknown>,
   emittedCanonical: string,
-  tool: OpenAiToolSpec | undefined
+  tool: OpenAiToolSpec | undefined,
+  context?: ToolCallContext
 ): Record<string, unknown> | undefined {
   if (!["write", "edit", "delete"].includes(emittedCanonical)) return undefined;
   const schema = toolParameterSchema(tool);
@@ -2193,9 +2327,10 @@ function patchStyleFileArguments(
     patch = deleteFilePatch(path);
   }
 
+  const normalizedPath = normalizeToolArgumentValue(path, firstMatchingProperty(pathCandidates(), schema.properties, normalizedProperties) || "path", tool, context);
   const output: Record<string, unknown> = { [patchKey]: patch };
   const pathKey = firstMatchingProperty(pathCandidates(), schema.properties, normalizedProperties);
-  if (pathKey) output[pathKey] = path;
+  if (pathKey) output[pathKey] = normalizedPath;
   return output;
 }
 
@@ -2323,7 +2458,8 @@ function normalizeWrapperObjectArguments(
   tool: OpenAiToolSpec | undefined,
   emittedName: string,
   schema: ToolParameterSchemaShape,
-  wrapperDepth: number
+  wrapperDepth: number,
+  context?: ToolCallContext
 ): Record<string, unknown> | undefined {
   if (!tool || wrapperDepth > 1) return undefined;
   const wrapper = wrapperObjectArgumentProperty(tool, schema);
@@ -2332,7 +2468,8 @@ function normalizeWrapperObjectArguments(
     args,
     { name: tool.name, description: tool.description, parameters: wrapper.parameters },
     canonicalToolName(emittedName) === "mcp" && canonicalToolName(tool.name) !== "mcp" ? tool.name : emittedName,
-    wrapperDepth + 1
+    wrapperDepth + 1,
+    context
   );
   return { [wrapper.key]: nested };
 }

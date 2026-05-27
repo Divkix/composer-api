@@ -26,6 +26,7 @@ import { submitWaitlist } from "./waitlist";
 import { encodeSse } from "./sse";
 import type { Deps, Env } from "./types";
 import type { CursorTextEvent } from "./cursor";
+import type { ToolCallContext } from "./openai";
 import type { OpenAiToolSpec } from "./openai";
 
 export { CursorSdkBridgeContainer } from "./sdk-bridge-container";
@@ -265,6 +266,7 @@ async function handleOpenAiRoute(
         includeUsage: prepared.includeUsage,
         metadata: prepared.responseMetadata,
         tools: prepared.tools,
+        context: prepared.toolContext,
         onDone: async (text, completionChars, toolCalls) => {
           if (route.kind === "responses" && responseOwner) {
             const completed = responseObject({
@@ -302,7 +304,8 @@ async function handleOpenAiRoute(
     const toolCalls = toOpenAiToolCalls({
       toolCalls: output.toolCalls,
       tools: prepared.tools,
-      responseId: id
+      responseId: id,
+      context: prepared.toolContext
     });
     const completionChars = completionCharsFromOutput(output.text, toolCalls);
     await finishLog({
@@ -387,7 +390,8 @@ async function handleOpenCodeSdkChatRoute(
         toOpenAiToolCalls({
           toolCalls: [toolCall],
           tools: prepared.tools,
-          responseId: "probe"
+          responseId: "probe",
+          context: prepared.toolContext
         }).length > 0
     });
 
@@ -400,6 +404,7 @@ async function handleOpenCodeSdkChatRoute(
         includeUsage: prepared.includeUsage,
         metadata: prepared.responseMetadata,
         tools: prepared.tools,
+        context: prepared.toolContext,
         onDone: (_text, completionChars) =>
           finishLog({
             status: "completed",
@@ -421,7 +426,8 @@ async function handleOpenCodeSdkChatRoute(
     const toolCalls = toOpenAiToolCalls({
       toolCalls: output.toolCalls,
       tools: prepared.tools,
-      responseId: id
+      responseId: id,
+      context: prepared.toolContext
     });
     const completionChars = completionCharsFromOutput(output.text, toolCalls);
     await finishLog({
@@ -461,6 +467,7 @@ function streamOpenAiResponse(
     includeUsage: boolean;
     metadata?: Record<string, unknown>;
     tools: OpenAiToolSpec[];
+    context?: ToolCallContext;
     onDone: (text: string, completionChars: number, toolCalls: ReturnType<typeof toOpenAiToolCalls>) => Promise<void>;
     onError: (error: unknown) => Promise<void>;
   },
@@ -480,6 +487,7 @@ function streamOpenAiEvents(
     includeUsage: boolean;
     metadata?: Record<string, unknown>;
     tools: OpenAiToolSpec[];
+    context?: ToolCallContext;
     onDone: (text: string, completionChars: number, toolCalls: ReturnType<typeof toOpenAiToolCalls>) => Promise<void>;
     onError: (error: unknown) => Promise<void>;
   },
@@ -519,7 +527,8 @@ function streamOpenAiEvents(
             toolCalls: [event.toolCall],
             tools: input.tools,
             responseId: input.id,
-            startIndex: toolCallCount
+            startIndex: toolCallCount,
+            context: input.context
           });
           if (!toolCall) continue;
           finishReason = "tool_calls";

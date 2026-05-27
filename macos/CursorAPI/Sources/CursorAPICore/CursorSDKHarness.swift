@@ -131,7 +131,7 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
             settings: settings,
             onEvent: { buffered.append($0) }
         )
-        let unsupportedToolCall = first.toolCalls.first { !OpenAICompatibility.canMapToolCall($0, tools: prepared.tools) }
+        let unsupportedToolCall = first.toolCalls.first { !OpenAICompatibility.canMapToolCall($0, tools: prepared.tools, context: prepared.toolContext) }
         if !first.toolCalls.isEmpty, unsupportedToolCall == nil {
             for event in buffered.events() {
                 onEvent(event)

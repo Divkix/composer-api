@@ -148,6 +148,114 @@ describe("OpenAI compatibility adapter", () => {
     expect(JSON.parse(toolCalls[0].function.arguments)).toEqual({ pattern: "**/*.tsx", path: "src" });
   });
 
+  it("uses OpenCode working directory to normalize SDK file and glob calls to real OpenCode schemas", () => {
+    const prepared = prepareOpencodeSdkChatRequest(
+      {
+        model: "composer-2.5-sdk",
+        messages: [
+          {
+            role: "system",
+            content: [
+              "Environment:",
+              "  Working directory: /tmp/project",
+              "  Workspace root folder: /tmp/project"
+            ].join("\n")
+          },
+          { role: "user", content: "build a todo app in vite 8 and react" }
+        ],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "write",
+              description: "Writes a file to the local filesystem.",
+              parameters: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  content: { type: "string", description: "The content to write to the file" },
+                  filePath: { type: "string", description: "The absolute path to the file to write (must be absolute, not relative)" }
+                },
+                required: ["content", "filePath"]
+              }
+            }
+          },
+          {
+            type: "function",
+            function: {
+              name: "read",
+              description: "Read a file or directory from the local filesystem.",
+              parameters: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  filePath: { type: "string", description: "The absolute path to the file or directory to read" }
+                },
+                required: ["filePath"]
+              }
+            }
+          },
+          {
+            type: "function",
+            function: {
+              name: "edit",
+              description: "Performs exact string replacements in files.",
+              parameters: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  filePath: { type: "string", description: "The absolute path to the file to modify" },
+                  oldString: { type: "string" },
+                  newString: { type: "string" }
+                },
+                required: ["filePath", "oldString", "newString"]
+              }
+            }
+          },
+          {
+            type: "function",
+            function: {
+              name: "glob",
+              description: "Fast file pattern matching tool.",
+              parameters: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  pattern: { type: "string", description: "The glob pattern to match files against" },
+                  path: { type: "string", description: "The directory to search in" }
+                },
+                required: ["pattern"]
+              }
+            }
+          }
+        ]
+      },
+      { id: "composer-2.5-sdk" }
+    );
+
+    expect(prepared.toolContext).toEqual({ workingDirectory: "/tmp/project" });
+
+    const toolCalls = toOpenAiToolCalls({
+      responseId: "chatcmpl_test",
+      tools: prepared.tools,
+      context: prepared.toolContext,
+      toolCalls: [
+        { name: "write", arguments: { path: "src/App.tsx", fileText: "export default function App() { return null }" } },
+        { name: "read", arguments: { path: "src/App.tsx" } },
+        { name: "edit", arguments: { path: "src/App.tsx", oldString: "return null", newString: "return <main />" } },
+        { name: "glob", arguments: { targeting: "src/**", glob_pattern: "*.tsx" } }
+      ]
+    });
+
+    expect(toolCalls.map((call) => call.function.name)).toEqual(["write", "read", "edit", "glob"]);
+    expect(toolCalls.map((call) => JSON.parse(call.function.arguments))).toEqual([
+      { content: "export default function App() { return null }", filePath: "/tmp/project/src/App.tsx" },
+      { filePath: "/tmp/project/src/App.tsx" },
+      { filePath: "/tmp/project/src/App.tsx", oldString: "return null", newString: "return <main />" },
+      { pattern: "**/*.tsx", path: "/tmp/project/src" }
+    ]);
+  });
+
   it("keeps direct chat tools on direct tool-call syntax", () => {
     const prepared = prepareChatRequest(
       {
@@ -1281,7 +1389,7 @@ describe("OpenAI compatibility adapter", () => {
     expect(args.description).toBe("Starts background process: Runs python3 -m http.server 8080");
   });
 
-  it("prefers glob patterns over Cursor targeting when both are emitted", () => {
+  it("preserves recursive Cursor targeting without leaking absolute target paths into glob patterns", () => {
     const toolCalls = toOpenAiToolCalls({
       responseId: "chatcmpl_test",
       tools: [
@@ -1298,7 +1406,30 @@ describe("OpenAI compatibility adapter", () => {
       toolCalls: [{ name: "file_search", arguments: { targeting: "/Users/example/project/**", glob_pattern: "*.ts" } }]
     });
 
-    expect(JSON.parse(toolCalls[0].function.arguments)).toEqual({ pattern: "*.ts" });
+    expect(JSON.parse(toolCalls[0].function.arguments)).toEqual({ pattern: "**/*.ts" });
+  });
+
+  it("repairs swapped SDK glob pattern and path values", () => {
+    const toolCalls = toOpenAiToolCalls({
+      responseId: "chatcmpl_test",
+      tools: [
+        {
+          name: "glob",
+          parameters: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              pattern: { type: "string" },
+              path: { type: "string" }
+            },
+            required: ["pattern"]
+          }
+        }
+      ],
+      toolCalls: [{ name: "glob", arguments: { targetDirectory: "**/*.tsx", globPattern: "/tmp/project" } }]
+    });
+
+    expect(JSON.parse(toolCalls[0].function.arguments)).toEqual({ pattern: "**/*.tsx", path: "/tmp/project" });
   });
 
   it("defaults empty SDK glob calls to a valid OpenCode workspace glob", () => {

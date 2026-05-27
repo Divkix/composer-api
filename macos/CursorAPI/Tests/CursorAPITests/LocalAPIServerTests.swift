@@ -2196,6 +2196,141 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertNil(arguments["globPattern"])
     }
 
+    func testChatToolCallsUseOpenCodeWorkingDirectoryForRealFileAndGlobSchemas() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[
+            {
+              "role":"system",
+              "content":"Environment:\n  Working directory: /tmp/project\n  Workspace root folder: /tmp/project"
+            },
+            {"role":"user","content":"build a todo app in vite 8 and react"}
+          ],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"write",
+                "description":"Writes a file to the local filesystem.",
+                "parameters":{
+                  "type":"object",
+                  "additionalProperties":false,
+                  "properties":{
+                    "content":{"type":"string","description":"The content to write to the file"},
+                    "filePath":{"type":"string","description":"The absolute path to the file to write (must be absolute, not relative)"}
+                  },
+                  "required":["content","filePath"]
+                }
+              }
+            },
+            {
+              "type":"function",
+              "function":{
+                "name":"read",
+                "description":"Read a file or directory from the local filesystem.",
+                "parameters":{
+                  "type":"object",
+                  "additionalProperties":false,
+                  "properties":{
+                    "filePath":{"type":"string","description":"The absolute path to the file or directory to read"}
+                  },
+                  "required":["filePath"]
+                }
+              }
+            },
+            {
+              "type":"function",
+              "function":{
+                "name":"edit",
+                "description":"Performs exact string replacements in files.",
+                "parameters":{
+                  "type":"object",
+                  "additionalProperties":false,
+                  "properties":{
+                    "filePath":{"type":"string","description":"The absolute path to the file to modify"},
+                    "oldString":{"type":"string"},
+                    "newString":{"type":"string"}
+                  },
+                  "required":["filePath","oldString","newString"]
+                }
+              }
+            },
+            {
+              "type":"function",
+              "function":{
+                "name":"glob",
+                "description":"Fast file pattern matching tool.",
+                "parameters":{
+                  "type":"object",
+                  "additionalProperties":false,
+                  "properties":{
+                    "pattern":{"type":"string","description":"The glob pattern to match files against"},
+                    "path":{"type":"string","description":"The directory to search in"}
+                  },
+                  "required":["pattern"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+        let output = CursorSDKOutput(text: "", toolCalls: [
+            CursorToolCall(name: "write", arguments: [
+                "path": .string("src/App.tsx"),
+                "fileText": .string("export default function App() { return null }")
+            ]),
+            CursorToolCall(name: "read", arguments: [
+                "path": .string("src/App.tsx")
+            ]),
+            CursorToolCall(name: "edit", arguments: [
+                "path": .string("src/App.tsx"),
+                "oldString": .string("return null"),
+                "newString": .string("return <main />")
+            ]),
+            CursorToolCall(name: "glob", arguments: [
+                "targeting": .string("src/**"),
+                "glob_pattern": .string("*.tsx")
+            ])
+        ], agentID: "agent-test", runID: "run-test")
+
+        XCTAssertEqual(prepared.toolContext?.workingDirectory, "/tmp/project")
+
+        let object = OpenAICompatibility.chatCompletionResponse(
+            id: "chatcmpl_test",
+            created: 1,
+            prepared: prepared,
+            output: output
+        )
+
+        let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
+        let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        let toolCalls = try XCTUnwrap(message["tool_calls"] as? [[String: Any]])
+        XCTAssertEqual(toolCalls.count, 4)
+
+        let writeFunction = try XCTUnwrap(toolCalls[0]["function"] as? [String: Any])
+        XCTAssertEqual(writeFunction["name"] as? String, "write")
+        XCTAssertEqual(try decodedArguments(writeFunction)["filePath"] as? String, "/tmp/project/src/App.tsx")
+        XCTAssertEqual(try decodedArguments(writeFunction)["content"] as? String, "export default function App() { return null }")
+
+        let readFunction = try XCTUnwrap(toolCalls[1]["function"] as? [String: Any])
+        XCTAssertEqual(readFunction["name"] as? String, "read")
+        XCTAssertEqual(try decodedArguments(readFunction)["filePath"] as? String, "/tmp/project/src/App.tsx")
+
+        let editFunction = try XCTUnwrap(toolCalls[2]["function"] as? [String: Any])
+        let editArguments = try decodedArguments(editFunction)
+        XCTAssertEqual(editFunction["name"] as? String, "edit")
+        XCTAssertEqual(editArguments["filePath"] as? String, "/tmp/project/src/App.tsx")
+        XCTAssertEqual(editArguments["oldString"] as? String, "return null")
+        XCTAssertEqual(editArguments["newString"] as? String, "return <main />")
+
+        let globFunction = try XCTUnwrap(toolCalls[3]["function"] as? [String: Any])
+        let globArguments = try decodedArguments(globFunction)
+        XCTAssertEqual(globFunction["name"] as? String, "glob")
+        XCTAssertEqual(globArguments["pattern"] as? String, "**/*.tsx")
+        XCTAssertEqual(globArguments["path"] as? String, "/tmp/project/src")
+    }
+
     func testChatToolCallsRepairSwappedSDKGlobArgumentsForOpenCode() throws {
         let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
         {

@@ -16,6 +16,10 @@ public struct ResponseToolCallMemory: Equatable, Sendable {
     }
 }
 
+public struct ToolCallContext: Equatable, Sendable {
+    public var workingDirectory: String?
+}
+
 public struct PreparedChatRequest: Equatable, Sendable {
     public var model: String
     public var cursorModelID: String
@@ -29,6 +33,7 @@ public struct PreparedChatRequest: Equatable, Sendable {
     public var previousResponseID: String?
     public var storeResponse: Bool
     public var responseInputItems: [JSONValue]
+    public var toolContext: ToolCallContext?
 }
 
 public enum OpenAICompatibility {
@@ -106,6 +111,7 @@ public enum OpenAICompatibility {
             throw CursorAPIError.badRequest("messages must be an array.")
         }
         let tools = parseTools(raw["tools"], disabled: (raw["tool_choice"] as? String) == "none")
+        let toolContext = toolCallContext(fromMessages: messages)
         let model = try ComposerModels.resolvedModelID(for: raw["model"] as? String)
         var transcript = [
             "You are running through a local Cursor SDK-compatible harness.",
@@ -175,7 +181,8 @@ public enum OpenAICompatibility {
             requestedSessionKey: nil,
             previousResponseID: nil,
             storeResponse: false,
-            responseInputItems: []
+            responseInputItems: [],
+            toolContext: toolContext
         )
     }
 
@@ -207,7 +214,8 @@ public enum OpenAICompatibility {
             requestedSessionKey: nil,
             previousResponseID: nil,
             storeResponse: false,
-            responseInputItems: []
+            responseInputItems: [],
+            toolContext: nil
         )
     }
 
@@ -250,7 +258,8 @@ public enum OpenAICompatibility {
             requestedSessionKey: responseSessionHint(raw),
             previousResponseID: nil,
             storeResponse: false,
-            responseInputItems: normalizedResponseInputItems(raw["input"])
+            responseInputItems: normalizedResponseInputItems(raw["input"]),
+            toolContext: nil
         )
     }
 
@@ -259,6 +268,7 @@ public enum OpenAICompatibility {
         let model = try ComposerModels.resolvedModelID(for: raw["model"] as? String)
         let instructions = (raw["instructions"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
         let tools = parseTools(raw["tools"], disabled: (raw["tool_choice"] as? String) == "none")
+        let toolContext = toolCallContext(fromResponseInput: raw["input"], instructions: instructions)
         let previousResponseID = (raw["previous_response_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty
         var transcript = [
             "You are running through a local Cursor SDK-compatible harness.",
@@ -307,7 +317,8 @@ public enum OpenAICompatibility {
             requestedSessionKey: responseSessionHint(raw),
             previousResponseID: previousResponseID,
             storeResponse: raw["store"] as? Bool ?? true,
-            responseInputItems: normalizedResponseInputItems(input)
+            responseInputItems: normalizedResponseInputItems(input),
+            toolContext: toolContext
         )
     }
 
@@ -318,7 +329,7 @@ public enum OpenAICompatibility {
     ) -> [String: ResponseToolCallMemory] {
         let suffix = id.replacingOccurrences(of: "[^A-Za-z0-9]", with: "", options: .regularExpression).suffix(18)
         return Dictionary(uniqueKeysWithValues: output.toolCalls.enumerated().compactMap { index, toolCall in
-            guard let resolved = resolveToolCall(toolCall, tools: prepared.tools) else {
+            guard let resolved = resolveToolCall(toolCall, tools: prepared.tools, context: prepared.toolContext) else {
                 return nil
             }
             return (
@@ -380,7 +391,7 @@ public enum OpenAICompatibility {
         prepared: PreparedChatRequest,
         output: CursorSDKOutput
     ) -> [String: Any] {
-        let toolCalls = toOpenAIToolCalls(output.toolCalls, tools: prepared.tools, responseID: id)
+        let toolCalls = toOpenAIToolCalls(output.toolCalls, tools: prepared.tools, responseID: id, context: prepared.toolContext)
         let content: Any = toolCalls.isEmpty ? output.text : NSNull()
         return [
             "id": id,
@@ -515,7 +526,7 @@ public enum OpenAICompatibility {
         toolCall: CursorToolCall,
         index: Int
     ) -> Data {
-        guard let converted = toOpenAIToolCalls([toolCall], tools: prepared.tools, responseID: "\(id)_\(index)").first else {
+        guard let converted = toOpenAIToolCalls([toolCall], tools: prepared.tools, responseID: "\(id)_\(index)", context: prepared.toolContext).first else {
             return Data()
         }
         return sse([
@@ -540,7 +551,7 @@ public enum OpenAICompatibility {
     }
 
     public static func chatCompletionStreamUsage(id: String, created: Int, prepared: PreparedChatRequest, output: CursorSDKOutput) -> Data {
-        let toolCalls = toOpenAIToolCalls(output.toolCalls, tools: prepared.tools, responseID: id)
+        let toolCalls = toOpenAIToolCalls(output.toolCalls, tools: prepared.tools, responseID: id, context: prepared.toolContext)
         return sse([
             "id": id,
             "object": "chat.completion.chunk",
@@ -834,6 +845,50 @@ public enum OpenAICompatibility {
             return role == "assistant" ? "" : "[empty]"
         }
         return String(describing: value!)
+    }
+
+    private static func toolCallContext(fromMessages messages: [[String: Any]]) -> ToolCallContext? {
+        let workingDirectory = messages
+            .map { contentText($0["content"], role: ($0["role"] as? String) ?? "user") }
+            .compactMap(workingDirectory(from:))
+            .first
+        return workingDirectory.map { ToolCallContext(workingDirectory: $0) }
+    }
+
+    private static func toolCallContext(fromResponseInput input: Any?, instructions: String?) -> ToolCallContext? {
+        var texts: [String] = []
+        if let instructions, !instructions.isEmpty {
+            texts.append(instructions)
+        }
+        texts.append(responseInputText(input))
+        let workingDirectory = texts.compactMap(workingDirectory(from:)).first
+        return workingDirectory.map { ToolCallContext(workingDirectory: $0) }
+    }
+
+    private static func workingDirectory(from text: String) -> String? {
+        for pattern in [
+            #"(?im)^\s*Working directory:\s*(.+)$"#,
+            #"(?im)^\s*Current working directory:\s*(.+)$"#,
+            #"(?im)^\s*Workspace root folder:\s*(.+)$"#,
+            #"(?im)^\s*Workspace root:\s*(.+)$"#
+        ] {
+            guard let range = text.range(of: pattern, options: .regularExpression) else { continue }
+            let line = String(text[range])
+            guard let value = line.split(separator: ":", maxSplits: 1).last.flatMap({ sanitizeContextPath(String($0)) }) else {
+                continue
+            }
+            return value
+        }
+        return nil
+    }
+
+    private static func sanitizeContextPath(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "\"'")))
+        guard !trimmed.isEmpty, trimmed != "." else { return nil }
+        let lower = trimmed.lowercased()
+        guard lower != "undefined", lower != "null" else { return nil }
+        return trimmed
     }
 
     private static func completionPromptText(_ value: Any) -> String {
@@ -1511,13 +1566,13 @@ public enum OpenAICompatibility {
         ]
     }
 
-    static func canMapToolCall(_ toolCall: CursorToolCall, tools: [OpenAIToolSpec]) -> Bool {
-        resolveToolCall(toolCall, tools: tools) != nil
+    static func canMapToolCall(_ toolCall: CursorToolCall, tools: [OpenAIToolSpec], context: ToolCallContext? = nil) -> Bool {
+        resolveToolCall(toolCall, tools: tools, context: context) != nil
     }
 
-    private static func toOpenAIToolCalls(_ toolCalls: [CursorToolCall], tools: [OpenAIToolSpec], responseID: String) -> [[String: Any]] {
+    private static func toOpenAIToolCalls(_ toolCalls: [CursorToolCall], tools: [OpenAIToolSpec], responseID: String, context: ToolCallContext? = nil) -> [[String: Any]] {
         toolCalls.enumerated().compactMap { index, toolCall in
-            guard let resolved = resolveToolCall(toolCall, tools: tools) else {
+            guard let resolved = resolveToolCall(toolCall, tools: tools, context: context) else {
                 return nil
             }
             return [
@@ -1538,7 +1593,7 @@ public enum OpenAICompatibility {
     }
 
     private static func responseToolCallItem(_ toolCall: CursorToolCall, prepared: PreparedChatRequest, responseID: String, index: Int) -> [String: Any]? {
-        guard let resolved = resolveToolCall(toolCall, tools: prepared.tools) else {
+        guard let resolved = resolveToolCall(toolCall, tools: prepared.tools, context: prepared.toolContext) else {
             return nil
         }
         let suffix = responseID.replacingOccurrences(of: "[^A-Za-z0-9]", with: "", options: .regularExpression).suffix(18)
@@ -1557,7 +1612,7 @@ public enum OpenAICompatibility {
         var arguments: [String: JSONValue]
     }
 
-    private static func resolveToolCall(_ toolCall: CursorToolCall, tools: [OpenAIToolSpec]) -> ResolvedToolCall? {
+    private static func resolveToolCall(_ toolCall: CursorToolCall, tools: [OpenAIToolSpec], context: ToolCallContext? = nil) -> ResolvedToolCall? {
         let normalizedToolCall = normalizeSDKToolCall(toolCall)
         guard let tool = resolveToolSpec(normalizedToolCall.name, arguments: normalizedToolCall.arguments, tools: tools) else {
             guard tools.isEmpty else { return nil }
@@ -1565,7 +1620,7 @@ public enum OpenAICompatibility {
         }
         return ResolvedToolCall(
             name: tool.name,
-            arguments: normalizeArguments(normalizedToolCall.arguments, sdkToolName: normalizedToolCall.name, tool: tool)
+            arguments: normalizeArguments(normalizedToolCall.arguments, sdkToolName: normalizedToolCall.name, tool: tool, context: context)
         )
     }
 
@@ -1707,7 +1762,8 @@ public enum OpenAICompatibility {
         _ rawArguments: [String: JSONValue],
         sdkToolName: String,
         tool: OpenAIToolSpec,
-        wrapperDepth: Int = 0
+        wrapperDepth: Int = 0,
+        context: ToolCallContext? = nil
     ) -> [String: JSONValue] {
         let canonical = canonicalToolName(sdkToolName)
         let arguments = canonical == "mcp" ? rawArguments : expandedToolArguments(rawArguments)
@@ -1719,7 +1775,7 @@ public enum OpenAICompatibility {
            let wrapper = wrapperObjectArgumentProperty(tool: tool, properties: properties) {
             let nestedTool = OpenAIToolSpec(name: tool.name, description: tool.description, parameters: wrapper.schema)
             return [
-                wrapper.key: .object(normalizeArguments(arguments, sdkToolName: sdkToolName, tool: nestedTool, wrapperDepth: wrapperDepth + 1))
+                wrapper.key: .object(normalizeArguments(arguments, sdkToolName: sdkToolName, tool: nestedTool, wrapperDepth: wrapperDepth + 1, context: context))
             ]
         }
 
@@ -1730,10 +1786,10 @@ public enum OpenAICompatibility {
 
         guard !properties.isEmpty else { return arguments }
 
-        if let commandStyleFile = commandStyleFileArguments(arguments, sdkToolName: sdkToolName, tool: tool, properties: properties) {
+        if let commandStyleFile = commandStyleFileArguments(arguments, sdkToolName: sdkToolName, tool: tool, properties: properties, context: context) {
             return commandStyleFile
         }
-        if let patchStyleFile = patchStyleFileArguments(arguments, sdkToolName: sdkToolName, tool: tool, properties: properties) {
+        if let patchStyleFile = patchStyleFileArguments(arguments, sdkToolName: sdkToolName, tool: tool, properties: properties, context: context) {
             return patchStyleFile
         }
 
@@ -1747,11 +1803,11 @@ public enum OpenAICompatibility {
         }
 
         if canonical == "ls", selectedCanonical == "glob" {
-            return listAsGlobArguments(arguments, tool: tool)
+            return listAsGlobArguments(arguments, tool: tool, context: context)
         }
 
         if canonical == "mcp", selectedCanonical != "mcp" {
-            return specificMCPToolArguments(arguments, tool: tool)
+            return specificMCPToolArguments(arguments, tool: tool, context: context)
         }
 
         func copy(_ source: String, as candidates: [String]) {
@@ -1760,7 +1816,7 @@ public enum OpenAICompatibility {
                 consumed.insert(source)
                 return
             }
-            output[target] = value
+            output[target] = normalizeToolArgumentValue(value, property: target, tool: tool, context: context)
             consumed.insert(source)
         }
 
@@ -1770,7 +1826,7 @@ public enum OpenAICompatibility {
                 consumed.insert(argument.key)
                 return
             }
-            output[target] = argument.value
+            output[target] = normalizeToolArgumentValue(argument.value, property: target, tool: tool, context: context)
             consumed.insert(argument.key)
         }
 
@@ -1795,6 +1851,10 @@ public enum OpenAICompatibility {
             copy("offset", as: ["start", "startLine", "start_line"])
             copy("limit", as: ["maxLines", "max_lines", "lineCount", "line_count"])
             copy("includeLineNumbers", as: ["include_line_numbers", "lineNumbers", "line_numbers"])
+        case "edit":
+            copy("path", as: pathPropertyAliases())
+            copy("oldString", as: ["old_string", "old_str", "old", "oldText", "old_text", "search", "searchString", "search_string"])
+            copy("newString", as: ["new_string", "new_str", "newText", "new_text", "replacement", "replace", "content"])
         case "grep":
             copy("pattern", as: ["query", "regex", "search"])
             copy("path", as: pathPropertyAliases() + ["directory"])
@@ -1810,7 +1870,7 @@ public enum OpenAICompatibility {
             copy("sortAscending", as: ["sort_ascending", "ascending"])
             copy("offset", as: ["start", "startLine", "start_line"])
         case "glob":
-            let glob = normalizedGlobArguments(arguments)
+            let glob = normalizedGlobArguments(arguments, context: context)
             if let patternKey = propertyName(matching: globPatternAliases(), in: properties) {
                 let pattern = glob.pattern ?? .string("**/*")
                 output[patternKey] = pattern
@@ -1818,7 +1878,7 @@ public enum OpenAICompatibility {
             if let searchPath = glob.searchPath,
                shouldIncludeOptionalPath(searchPath),
                let pathKey = propertyName(matching: globPathAliases(), in: properties) {
-                output[pathKey] = searchPath
+                output[pathKey] = normalizeToolArgumentValue(searchPath, property: pathKey, tool: tool, context: context)
             }
             consumed.formUnion(glob.consumed)
         case "ls":
@@ -1847,10 +1907,10 @@ public enum OpenAICompatibility {
 
         for (key, value) in arguments where !consumed.contains(key) {
             if let target = propertyName(matching: [key], in: properties) {
-                output[target] = value
+                output[target] = normalizeToolArgumentValue(value, property: target, tool: tool, context: context)
             } else if let target = aliasPropertyName(for: key, toolName: tool.name, properties: properties),
                       output[target] == nil {
-                output[target] = value
+                output[target] = normalizeToolArgumentValue(value, property: target, tool: tool, context: context)
             } else if allowAdditionalProperties {
                 output[key] = value
             }
@@ -1926,7 +1986,7 @@ public enum OpenAICompatibility {
         return output
     }
 
-    private static func specificMCPToolArguments(_ arguments: [String: JSONValue], tool: OpenAIToolSpec) -> [String: JSONValue] {
+    private static func specificMCPToolArguments(_ arguments: [String: JSONValue], tool: OpenAIToolSpec, context: ToolCallContext? = nil) -> [String: JSONValue] {
         let properties = parameterPropertyNames(tool)
         let allowAdditionalProperties = parameterAllowsAdditionalProperties(tool)
         guard !properties.isEmpty else {
@@ -1936,10 +1996,10 @@ public enum OpenAICompatibility {
         var output: [String: JSONValue] = [:]
         for (key, value) in expandedToolArguments(payload) {
             if let target = propertyName(matching: [key], in: properties) {
-                output[target] = value
+                output[target] = normalizeToolArgumentValue(value, property: target, tool: tool, context: context)
             } else if let target = aliasPropertyName(for: key, toolName: tool.name, properties: properties),
                       output[target] == nil {
-                output[target] = value
+                output[target] = normalizeToolArgumentValue(value, property: target, tool: tool, context: context)
             } else if allowAdditionalProperties {
                 output[key] = value
             }
@@ -2015,7 +2075,7 @@ public enum OpenAICompatibility {
         }
     }
 
-    private static func listAsGlobArguments(_ arguments: [String: JSONValue], tool: OpenAIToolSpec) -> [String: JSONValue] {
+    private static func listAsGlobArguments(_ arguments: [String: JSONValue], tool: OpenAIToolSpec, context: ToolCallContext? = nil) -> [String: JSONValue] {
         let properties = parameterPropertyNames(tool)
         guard !properties.isEmpty else { return arguments }
         var output: [String: JSONValue] = [:]
@@ -2025,7 +2085,7 @@ public enum OpenAICompatibility {
         if let path = firstArgument(in: arguments, keys: globPathAliases())?.value,
            shouldIncludeOptionalPath(path),
            let pathKey = propertyName(matching: globPathAliases(), in: properties) {
-            output[pathKey] = path
+            output[pathKey] = normalizeToolArgumentValue(path, property: pathKey, tool: tool, context: context)
         }
         return output.isEmpty ? arguments : output
     }
@@ -2067,7 +2127,7 @@ public enum OpenAICompatibility {
         var consumed: Set<String>
     }
 
-    private static func normalizedGlobArguments(_ arguments: [String: JSONValue]) -> GlobArguments {
+    private static func normalizedGlobArguments(_ arguments: [String: JSONValue], context: ToolCallContext? = nil) -> GlobArguments {
         let patternKeys = globPatternAliases()
         let pathKeys = globPathAliases()
         var pattern = firstArgument(in: arguments, keys: patternKeys)
@@ -2077,14 +2137,22 @@ public enum OpenAICompatibility {
         if let key = pattern?.key { consumed.insert(key) }
         if let key = searchPath?.key { consumed.insert(key) }
 
-        let patternLooksGlob = pattern?.value.stringValue.map(looksLikeGlobPattern) ?? false
-        let pathLooksGlob = searchPath?.value.stringValue.map(looksLikeGlobPattern) ?? false
-
-        if pathLooksGlob && !patternLooksGlob {
-            swap(&pattern, &searchPath)
-        } else if pattern == nil, pathLooksGlob {
-            pattern = searchPath
-            searchPath = nil
+        if let pathValue = searchPath?.value.stringValue {
+            let absolutePath = absolutizeToolPath(pathValue, context: context)
+            searchPath = NamedArgument(key: searchPath?.key ?? "path", value: .string(absolutePath))
+            if looksLikeGlobPattern(absolutePath) {
+                if let patternValue = pattern?.value.stringValue,
+                   !looksLikeGlobPattern(patternValue),
+                   looksLikePath(patternValue) {
+                    searchPath = NamedArgument(key: searchPath?.key ?? "path", value: .string(absolutizeToolPath(patternValue, context: context)))
+                    pattern = NamedArgument(key: pattern?.key ?? "pattern", value: .string(absolutePath))
+                } else {
+                    let split = splitGlobTargetPath(absolutePath)
+                    searchPath = split.path.map { NamedArgument(key: searchPath?.key ?? "path", value: .string($0)) }
+                    let combinedPattern = combineGlobPatterns(targetPattern: split.pattern, pattern: pattern?.value.stringValue)
+                    pattern = combinedPattern.map { NamedArgument(key: pattern?.key ?? "pattern", value: .string($0)) }
+                }
+            }
         }
 
         if let key = pattern?.key { consumed.insert(key) }
@@ -2117,12 +2185,110 @@ public enum OpenAICompatibility {
             || trimmed.contains("}")
     }
 
+    private static func looksLikePath(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.hasPrefix("/")
+            || trimmed.hasPrefix("./")
+            || trimmed.hasPrefix("../")
+            || trimmed.contains("/")
+    }
+
     private static func shouldIncludeOptionalPath(_ value: JSONValue) -> Bool {
         guard let string = value.stringValue else { return true }
         let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
         let lower = trimmed.lowercased()
         return lower != "undefined" && lower != "null"
+    }
+
+    private static func normalizeToolArgumentValue(_ value: JSONValue, property: String, tool: OpenAIToolSpec, context: ToolCallContext?) -> JSONValue {
+        guard let string = value.stringValue,
+              toolPropertyPrefersAbsolutePath(tool: tool, property: property) else {
+            return value
+        }
+        return .string(absolutizeToolPath(string, context: context))
+    }
+
+    private static func toolPropertyPrefersAbsolutePath(tool: OpenAIToolSpec, property: String) -> Bool {
+        if case .object(let schema)? = parameterPropertySchema(property, tool: tool),
+           let description = schema["description"]?.stringValue?.lowercased(),
+           description.contains("absolute path") {
+            return true
+        }
+        let normalizedProperty = normalizedName(property)
+        return ["read", "write", "edit", "delete"].contains(canonicalToolName(tool.name))
+            && ["filepath", "absolutepath"].contains(normalizedProperty)
+    }
+
+    private static func absolutizeToolPath(_ value: String, context: ToolCallContext?) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return trimmed }
+        if trimmed.hasPrefix("~") || trimmed.hasPrefix("$") || trimmed.range(of: #"^[A-Za-z][A-Za-z0-9+.-]*:"#, options: .regularExpression) != nil {
+            return trimmed
+        }
+        if trimmed.hasPrefix("/") {
+            return normalizePosixPath(trimmed)
+        }
+        guard let base = sanitizeContextPath(context?.workingDirectory), base.hasPrefix("/") else {
+            return trimmed
+        }
+        let baseWithoutTrailingSlash = base.replacingOccurrences(of: #"/+$"#, with: "", options: .regularExpression)
+        let prefix = baseWithoutTrailingSlash.isEmpty ? "/" : baseWithoutTrailingSlash
+        return normalizePosixPath("\(prefix)/\(trimmed)")
+    }
+
+    private static func normalizePosixPath(_ value: String) -> String {
+        guard value.hasPrefix("/") else {
+            return value.replacingOccurrences(of: #"/{2,}"#, with: "/", options: .regularExpression)
+        }
+        var parts: [String] = []
+        for part in value.split(separator: "/", omittingEmptySubsequences: true).map(String.init) {
+            if part == "." {
+                continue
+            }
+            if part == ".." {
+                _ = parts.popLast()
+                continue
+            }
+            parts.append(part)
+        }
+        return "/" + parts.joined(separator: "/")
+    }
+
+    private static func splitGlobTargetPath(_ value: String) -> (path: String?, pattern: String?) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let firstGlob = trimmed.firstIndex(where: { "*?[]{}".contains($0) }) else {
+            return (trimmed, nil)
+        }
+        let beforeGlob = trimmed[..<firstGlob]
+        let slash = beforeGlob.lastIndex(of: "/")
+        let base: String
+        let pattern: String
+        if let slash {
+            base = slash == trimmed.startIndex ? "/" : String(trimmed[..<slash])
+            pattern = String(trimmed[trimmed.index(after: slash)...]).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        } else {
+            base = ""
+            pattern = String(trimmed)
+        }
+        return (base.isEmpty ? nil : base, pattern.isEmpty ? nil : pattern)
+    }
+
+    private static func combineGlobPatterns(targetPattern: String?, pattern: String?) -> String? {
+        let cleanTarget = targetPattern?.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let cleanPattern = pattern?.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let cleanTarget, !cleanTarget.isEmpty else { return cleanPattern }
+        guard let cleanPattern, !cleanPattern.isEmpty else { return cleanTarget }
+        if cleanTarget == "**" {
+            return cleanPattern == "*" ? "**/*" : "**/\(cleanPattern)"
+        }
+        if cleanTarget == "*" {
+            return cleanPattern
+        }
+        if cleanPattern == "*" {
+            return cleanTarget
+        }
+        return cleanPattern
     }
 
     private static func normalizeTodoWriteArguments(_ arguments: [String: JSONValue]) -> [String: JSONValue] {
@@ -2299,7 +2465,8 @@ public enum OpenAICompatibility {
         _ arguments: [String: JSONValue],
         sdkToolName: String,
         tool: OpenAIToolSpec,
-        properties: [String]
+        properties: [String],
+        context: ToolCallContext? = nil
     ) -> [String: JSONValue]? {
         let canonical = canonicalToolName(sdkToolName)
         guard ["write", "read", "edit", "delete"].contains(canonical),
@@ -2312,7 +2479,7 @@ public enum OpenAICompatibility {
 
         var output: [String: JSONValue] = [
             operationKey: .string(operationValue(for: canonical, property: operationKey, tool: tool)),
-            pathKey: path
+            pathKey: normalizeToolArgumentValue(path, property: pathKey, tool: tool, context: context)
         ]
 
         switch canonical {
@@ -2443,7 +2610,8 @@ public enum OpenAICompatibility {
         _ arguments: [String: JSONValue],
         sdkToolName: String,
         tool: OpenAIToolSpec,
-        properties: [String]
+        properties: [String],
+        context: ToolCallContext? = nil
     ) -> [String: JSONValue]? {
         let canonical = canonicalToolName(sdkToolName)
         guard ["write", "edit", "delete"].contains(canonical),
@@ -2475,7 +2643,7 @@ public enum OpenAICompatibility {
 
         var output: [String: JSONValue] = [patchKey: .string(patch)]
         if let pathKey = propertyName(matching: pathPropertyAliases(), in: properties) {
-            output[pathKey] = .string(path)
+            output[pathKey] = normalizeToolArgumentValue(.string(path), property: pathKey, tool: tool, context: context)
         }
         return output
     }
@@ -2792,7 +2960,7 @@ public enum OpenAICompatibility {
     }
 
     private static func globPathAliases() -> [String] {
-        ["targetDirectory", "target_directory", "directory", "cwd", "path", "root", "rootDir", "root_dir", "basePath", "base_path", "searchPath", "search_path"]
+        ["targetDirectory", "target_directory", "targeting", "directory", "cwd", "path", "root", "rootDir", "root_dir", "basePath", "base_path", "searchPath", "search_path"]
     }
 
     private static func normalizedName(_ value: String) -> String {
