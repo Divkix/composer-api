@@ -111,7 +111,7 @@ public enum OpenAICompatibility {
             "You are running through a local Cursor SDK-compatible harness.",
             "The client owns local tool execution. When local inspection, shell commands, or file changes are needed, request a tool call and wait for the tool result.",
             "When the conversation includes LOCAL TOOL RESULT records, treat them as completed SDK tool_call results for your previous tool requests and continue from those results.",
-            "If the user explicitly names an allowed client tool, use that tool. OpenCode MCP/server tools exposed as provider_tool names are called through SDK mcp with providerIdentifier, toolName, and args.",
+            "If the user explicitly names an allowed client tool, use that tool. Non-builtin client tools and OpenCode MCP/server tools are called through SDK mcp with providerIdentifier, toolName, and args.",
             "For general file creation when no specific client tool is requested, prefer SDK shell when a shell client tool is available; otherwise request write calls with both path and fileText.",
             "Do not claim that you created, edited, inspected, or ran anything locally unless you emitted a tool call and received a LOCAL TOOL RESULT confirming it.",
             "When starting a dev server or other long-running watcher, start it in the background with output redirected and return immediately.",
@@ -264,7 +264,7 @@ public enum OpenAICompatibility {
             "You are running through a local Cursor SDK-compatible harness.",
             "The client owns local tool execution. When local inspection, shell commands, or file changes are needed, request a function_call and wait for the function_call_output.",
             "When the input includes function_call_output records, treat them as completed local tool results for your previous function_call requests and continue from those results.",
-            "If the user explicitly names an allowed client tool, use that tool. OpenCode MCP/server tools exposed as provider_tool names are called through SDK mcp with providerIdentifier, toolName, and args.",
+            "If the user explicitly names an allowed client tool, use that tool. Non-builtin client tools and OpenCode MCP/server tools are called through SDK mcp with providerIdentifier, toolName, and args.",
             "For general file creation when no specific client tool is requested, prefer SDK shell when a shell client tool is available; otherwise request write calls with both path and fileText.",
             "Do not claim that you created, edited, inspected, or ran anything locally unless you emitted a function_call and received a function_call_output confirming it.",
             "When starting a dev server or other long-running watcher, start it in the background with output redirected and return immediately.",
@@ -1076,25 +1076,37 @@ public enum OpenAICompatibility {
         transcript.append("Allowed tool names: \(tools.map(\.name).joined(separator: ", "))")
         transcript.append("Use only the client's local tools for filesystem and shell work.")
         transcript.append("For local work, emit SDK built-in tool calls; the harness translates them to the matching client tool names and schemas.")
-        transcript.append("When the user names a specific allowed client tool, do not substitute a different tool. OpenCode MCP/server tools exposed as provider_tool names should be requested with SDK mcp.")
+        transcript.append("When the user names a specific allowed client tool, do not substitute a different tool. Non-builtin client tools, including OpenCode MCP/server tools, should be requested with SDK mcp using providerIdentifier, toolName, and args.")
         transcript.append("If you need a local tool, emit the tool call before prose. Do not write progress text such as \"creating the file\" instead of calling a tool.")
         if hasCompatibleTool("shell", in: tools) {
             transcript.append("A shell client tool is available. For general file creation or overwrite requests, prefer an SDK shell call using mkdir -p and a quoted heredoc.")
         }
         for tool in tools {
-            var record: [String: Any] = ["name": tool.name]
-            if let description = tool.description { record["description"] = description }
-            if let parameters = tool.parameters { record["parameters"] = parameters.foundationValue }
+            let record = toolInventoryRecord(tool)
             if let data = try? JSONSerialization.data(withJSONObject: record, options: [.withoutEscapingSlashes]),
                let json = String(data: data, encoding: .utf8) {
                 transcript.append(json)
             }
         }
         if let name = toolChoiceFunctionName(toolChoice) {
-            transcript.append("Use the \(name) tool if you call a tool.")
+            transcript.append(requestedToolHint(for: name))
         } else if (toolChoice as? String) == "required" {
             transcript.append("You must call at least one tool.")
         }
+    }
+
+    private static func toolInventoryRecord(_ tool: OpenAIToolSpec) -> [String: Any] {
+        var record: [String: Any] = ["name": tool.name]
+        if let description = tool.description { record["description"] = description }
+        if let parameters = tool.parameters { record["parameters"] = parameters.foundationValue }
+        if let target = mcpTarget(forClientToolName: tool.name) {
+            record["sdk_mcp"] = [
+                "providerIdentifier": target.provider,
+                "toolName": target.toolName,
+                "args": "match this tool schema"
+            ]
+        }
+        return record
     }
 
     private static func appendRequiredLocalToolHint(_ transcript: inout [String], tools: [OpenAIToolSpec], latestUserText: String) {
@@ -1102,11 +1114,7 @@ public enum OpenAICompatibility {
         transcript.append("LOCAL TOOL REQUIRED FOR THE LATEST USER REQUEST:")
         transcript.append("The latest user request requires local filesystem or shell execution. Emit exactly one SDK tool call next and no prose.")
         if let requestedTool = explicitlyRequestedToolName(in: latestUserText, tools: tools) {
-            if let mcpTarget = mcpTarget(forClientToolName: requestedTool) {
-                transcript.append("Use SDK mcp now with providerIdentifier \"\(mcpTarget.provider)\", toolName \"\(mcpTarget.toolName)\", and args matching the \(requestedTool) schema. Do not use SDK shell/write as a substitute for this explicitly requested client tool. After the client returns a LOCAL TOOL RESULT, continue.")
-            } else {
-                transcript.append("Use the explicitly requested client tool \(requestedTool) now, with arguments matching its schema. Do not substitute a different tool. After the client returns a LOCAL TOOL RESULT, continue.")
-            }
+            transcript.append("\(requestedToolHint(for: requestedTool)) After the client returns a LOCAL TOOL RESULT, continue.")
             return
         }
         if hasCompatibleTool("shell", in: tools) {
@@ -1114,6 +1122,13 @@ public enum OpenAICompatibility {
         } else {
             transcript.append("For creating or overwriting a file, use SDK write with path and fileText. After the client returns a LOCAL TOOL RESULT, continue.")
         }
+    }
+
+    private static func requestedToolHint(for toolName: String) -> String {
+        if let mcpTarget = mcpTarget(forClientToolName: toolName) {
+            return "Use SDK mcp now with providerIdentifier \"\(mcpTarget.provider)\", toolName \"\(mcpTarget.toolName)\", and args matching the \(toolName) schema. Do not use SDK shell/write as a substitute for this explicitly requested client tool."
+        }
+        return "Use the explicitly requested client tool \(toolName) now, with arguments matching its schema. Do not substitute a different tool."
     }
 
     private static func explicitlyRequestedToolName(in text: String, tools: [OpenAIToolSpec]) -> String? {
@@ -1139,28 +1154,30 @@ public enum OpenAICompatibility {
     }
 
     private static func mcpTarget(forClientToolName name: String) -> (provider: String, toolName: String)? {
-        if isKnownMappedToolName(name) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if isKnownMappedToolName(trimmed) {
             return nil
         }
-        if name.hasPrefix("mcp__") {
-            let parts = name.components(separatedBy: "__").filter { !$0.isEmpty }
+        if trimmed.hasPrefix("mcp__") {
+            let parts = trimmed.components(separatedBy: "__").filter { !$0.isEmpty }
             if parts.count >= 3 {
                 return (provider: parts[1], toolName: parts.dropFirst(2).joined(separator: "__"))
             }
         }
-        guard let separator = name.firstIndex(of: "_"),
-              separator != name.startIndex,
-              separator < name.index(before: name.endIndex) else {
-            return nil
+        if let separator = trimmed.firstIndex(of: "_"),
+           separator != trimmed.startIndex,
+           separator < trimmed.index(before: trimmed.endIndex) {
+            let provider = String(trimmed[..<separator])
+            let toolName = String(trimmed[trimmed.index(after: separator)...])
+            guard !provider.isEmpty, !toolName.isEmpty else { return nil }
+            return (provider: provider, toolName: toolName)
         }
-        let provider = String(name[..<separator])
-        let toolName = String(name[name.index(after: separator)...])
-        guard !provider.isEmpty, !toolName.isEmpty else { return nil }
-        return (provider: provider, toolName: toolName)
+        return (provider: "client", toolName: trimmed)
     }
 
     private static func isKnownMappedToolName(_ name: String) -> Bool {
-        let knownCanonicals = ["shell", "write", "read", "delete", "grep", "glob", "ls", "readlints", "mcp", "semsearch", "todowrite"]
+        let knownCanonicals = ["shell", "write", "read", "edit", "delete", "grep", "glob", "ls", "readlints", "mcp", "semsearch", "todowrite"]
         let normalized = normalizedName(name)
         return knownCanonicals.contains { canonical in
             canonicalToolName(name) == canonical || toolAliases(for: canonical).map(normalizedName).contains(normalized)

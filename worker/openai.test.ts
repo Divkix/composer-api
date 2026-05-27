@@ -148,6 +148,34 @@ describe("OpenAI compatibility adapter", () => {
     expect(JSON.parse(toolCalls[0].function.arguments)).toEqual({ pattern: "**/*.tsx", path: "src" });
   });
 
+  it("advertises single-word non-builtin client tools through synthetic SDK MCP targets", () => {
+    const prepared = prepareOpencodeSdkChatRequest(
+      {
+        model: "composer-2.5-sdk",
+        messages: [{ role: "user", content: "Use the webfetch tool to fetch https://example.com" }],
+        tool_choice: { type: "function", function: { name: "webfetch" } },
+        tools: [
+          {
+            name: "webfetch",
+            description: "Fetch a URL",
+            input_schema: {
+              type: "object",
+              properties: {
+                url: { type: "string" },
+                format: { type: "string" }
+              },
+              required: ["url"]
+            }
+          }
+        ]
+      },
+      { id: "composer-2.5-sdk" }
+    );
+
+    expect(prepared.prompt.text).toContain('"sdk_mcp":{"providerIdentifier":"client","toolName":"webfetch","args":"match this tool schema"}');
+    expect(prepared.prompt.text).toContain('Use SDK mcp now with providerIdentifier "client", toolName "webfetch"');
+  });
+
   it("accepts server tool schemas and skips nameless built-in response tools", () => {
     const prepared = prepareResponsesRequest(
       {
@@ -454,7 +482,7 @@ describe("OpenAI compatibility adapter", () => {
 
     expect(prepared.prompt.text).toContain('Use SDK mcp now with providerIdentifier "probe", toolName "write_file"');
     expect(prepared.prompt.text).toContain("Do not use SDK shell/write as a substitute");
-    expect(prepared.prompt.text).toContain("OpenCode MCP/server tools exposed as provider_tool names should be requested with SDK mcp");
+    expect(prepared.prompt.text).toContain("Non-builtin client tools, including OpenCode MCP/server tools, should be requested with SDK mcp");
     expect(prepared.prompt.text).not.toContain("Your next tool call must be write or shell");
     expect(prepared.requiresLocalTool).toBe(true);
   });
@@ -782,6 +810,45 @@ describe("OpenAI compatibility adapter", () => {
     });
   });
 
+  it("maps Cursor SDK MCP calls to single-word client tools", () => {
+    const toolCalls = toOpenAiToolCalls({
+      responseId: "chatcmpl_test",
+      tools: [
+        {
+          name: "webfetch",
+          parameters: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              url: { type: "string" },
+              format: { type: "string" }
+            },
+            required: ["url"]
+          }
+        }
+      ],
+      toolCalls: [
+        {
+          name: "mcp",
+          arguments: {
+            providerIdentifier: "client",
+            toolName: "webfetch",
+            args: {
+              url: "https://example.com",
+              format: "markdown"
+            }
+          }
+        }
+      ]
+    });
+
+    expect(toolCalls[0].function.name).toBe("webfetch");
+    expect(JSON.parse(toolCalls[0].function.arguments)).toEqual({
+      url: "https://example.com",
+      format: "markdown"
+    });
+  });
+
   it("feeds OpenCode server tool results back as completed SDK MCP calls", () => {
     const prepared = prepareOpencodeSdkChatRequest(
       {
@@ -839,6 +906,65 @@ describe("OpenAI compatibility adapter", () => {
       args: {
         file_path: "src/App.tsx",
         contents: "export default function App() { return null }"
+      }
+    });
+    expect(feedback.result).toEqual({ status: "success", value: { content: "ok" } });
+  });
+
+  it("feeds single-word client tool results back as completed synthetic SDK MCP calls", () => {
+    const prepared = prepareOpencodeSdkChatRequest(
+      {
+        model: "composer-2.5-sdk",
+        messages: [
+          { role: "user", content: "Use the webfetch tool." },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "call_webfetch",
+                type: "function",
+                function: {
+                  name: "webfetch",
+                  arguments: JSON.stringify({ url: "https://example.com", format: "markdown" })
+                }
+              }
+            ]
+          },
+          { role: "tool", tool_call_id: "call_webfetch", name: "webfetch", content: "{\"content\":\"ok\"}" }
+        ],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "webfetch",
+              parameters: {
+                type: "object",
+                properties: {
+                  url: { type: "string" },
+                  format: { type: "string" }
+                },
+                required: ["url"]
+              }
+            }
+          }
+        ]
+      },
+      { id: "composer-2.5-sdk" }
+    );
+
+    const line = prepared.prompt.text
+      .split("\n")
+      .find((item) => item.startsWith("LOCAL OPENCODE TOOL RESULT: "));
+    expect(line).toBeTruthy();
+    const feedback = JSON.parse(line!.slice("LOCAL OPENCODE TOOL RESULT: ".length));
+    expect(feedback.name).toBe("mcp");
+    expect(feedback.args).toEqual({
+      providerIdentifier: "client",
+      toolName: "webfetch",
+      args: {
+        url: "https://example.com",
+        format: "markdown"
       }
     });
     expect(feedback.result).toEqual({ status: "success", value: { content: "ok" } });

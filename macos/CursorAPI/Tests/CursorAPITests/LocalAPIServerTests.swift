@@ -1661,6 +1661,40 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertFalse(prepared.prompt.contains("Use SDK shell now. For creating or overwriting a file"))
     }
 
+    func testChatToolInventoryAdvertisesSingleWordClientToolsAsSDKMCP() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model": "composer-2.5",
+          "messages": [
+            {"role": "user", "content": "Use the webfetch tool to fetch https://example.com"}
+          ],
+          "tool_choice": {"type":"function","function":{"name":"webfetch"}},
+          "tools": [
+            {
+              "type": "function",
+              "function": {
+                "name": "webfetch",
+                "description": "Fetch a URL",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "url": { "type": "string" },
+                    "format": { "type": "string" }
+                  },
+                  "required": ["url"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+
+        XCTAssertTrue(prepared.prompt.contains("\"providerIdentifier\":\"client\""))
+        XCTAssertTrue(prepared.prompt.contains("\"toolName\":\"webfetch\""))
+        XCTAssertTrue(prepared.prompt.contains("\"args\":\"match this tool schema\""))
+        XCTAssertTrue(prepared.prompt.contains("Use SDK mcp now with providerIdentifier \"client\", toolName \"webfetch\""))
+    }
+
     func testChatToolResultsRenderPriorCallsAndContinuationPrompt() throws {
         let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
         {
@@ -1754,6 +1788,62 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual(nested["contents"] as? String, "export default function App() { return null }")
     }
 
+    func testChatToolResultsFeedSingleWordClientToolsBackAsSDKMCPCalls() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[
+            {"role":"user","content":"use webfetch"},
+            {
+              "role":"assistant",
+              "content":null,
+              "tool_calls":[
+                {
+                  "id":"call_webfetch",
+                  "type":"function",
+                  "function":{
+                    "name":"webfetch",
+                    "arguments":"{\"url\":\"https://example.com\",\"format\":\"markdown\"}"
+                  }
+                }
+              ]
+            },
+            {"role":"tool","tool_call_id":"call_webfetch","name":"webfetch","content":"{\"content\":\"ok\"}"}
+          ],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"webfetch",
+                "parameters":{
+                  "type":"object",
+                  "properties":{
+                    "url":{"type":"string"},
+                    "format":{"type":"string"}
+                  },
+                  "required":["url"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+
+        let prefix = "LOCAL TOOL RESULT: "
+        let feedbackLine = try XCTUnwrap(prepared.prompt.split(separator: "\n").first { $0.hasPrefix(prefix) })
+        let feedbackJSON = String(feedbackLine.dropFirst(prefix.count))
+        let feedbackData = Data(feedbackJSON.utf8)
+        let feedback = try XCTUnwrap(JSONSerialization.jsonObject(with: feedbackData) as? [String: Any])
+        let arguments = try XCTUnwrap(feedback["arguments"] as? [String: Any])
+        let nested = try XCTUnwrap(arguments["args"] as? [String: Any])
+
+        XCTAssertEqual(feedback["toolName"] as? String, "mcp")
+        XCTAssertEqual(arguments["providerIdentifier"] as? String, "client")
+        XCTAssertEqual(arguments["toolName"] as? String, "webfetch")
+        XCTAssertEqual(nested["url"] as? String, "https://example.com")
+        XCTAssertEqual(nested["format"] as? String, "markdown")
+    }
+
     func testChatFileRequestAfterPriorToolResultStillRequiresLocalTool() throws {
         let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
         {
@@ -1821,7 +1911,7 @@ final class LocalAPIServerTests: XCTestCase {
         """#.utf8))
 
         XCTAssertEqual(prepared.tools.map(\.name), ["shell"])
-        XCTAssertTrue(prepared.prompt.contains("Use the shell tool if you call a tool."))
+        XCTAssertTrue(prepared.prompt.contains("Use the explicitly requested client tool shell now"))
     }
 
     func testResponsesToolChoiceNestedFunctionShapeAddsPromptHint() throws {
@@ -1849,7 +1939,7 @@ final class LocalAPIServerTests: XCTestCase {
         """#.utf8))
 
         XCTAssertEqual(prepared.tools.map(\.name), ["shell"])
-        XCTAssertTrue(prepared.prompt.contains("Use the shell tool if you call a tool."))
+        XCTAssertTrue(prepared.prompt.contains("Use the explicitly requested client tool shell now"))
     }
 
     func testResponsesEndpointReturnsFunctionCallOutputItems() async throws {
@@ -3209,6 +3299,60 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual(function["name"] as? String, "mcp__filesystem__write_file")
         XCTAssertEqual(arguments["filePath"] as? String, "src/App.tsx")
         XCTAssertEqual(arguments["content"] as? String, "export default function App() { return null }")
+        XCTAssertNil(arguments["providerIdentifier"])
+        XCTAssertNil(arguments["toolName"])
+        XCTAssertNil(arguments["args"])
+    }
+
+    func testChatToolCallsMapSDKMCPArgsToSingleWordClientTool() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[{"role":"user","content":"use webfetch"}],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"webfetch",
+                "parameters":{
+                  "type":"object",
+                  "properties":{
+                    "url":{"type":"string"},
+                    "format":{"type":"string"}
+                  },
+                  "required":["url"],
+                  "additionalProperties":false
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+        let toolCall = CursorToolCall(name: "mcp", arguments: [
+            "providerIdentifier": .string("client"),
+            "toolName": .string("webfetch"),
+            "args": .object([
+                "url": .string("https://example.com"),
+                "format": .string("markdown")
+            ])
+        ])
+
+        let object = OpenAICompatibility.chatCompletionResponse(
+            id: "chatcmpl_test",
+            created: 1,
+            prepared: prepared,
+            output: CursorSDKOutput(text: "", toolCalls: [toolCall], agentID: "agent-test", runID: "run-test")
+        )
+
+        let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
+        let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        let toolCalls = try XCTUnwrap(message["tool_calls"] as? [[String: Any]])
+        let function = try XCTUnwrap(toolCalls.first?["function"] as? [String: Any])
+        let arguments = try decodedArguments(function)
+
+        XCTAssertEqual(function["name"] as? String, "webfetch")
+        XCTAssertEqual(arguments["url"] as? String, "https://example.com")
+        XCTAssertEqual(arguments["format"] as? String, "markdown")
         XCTAssertNil(arguments["providerIdentifier"])
         XCTAssertNil(arguments["toolName"])
         XCTAssertNil(arguments["args"])

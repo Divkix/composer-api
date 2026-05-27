@@ -87,7 +87,7 @@ const RESPONSES_TOOL_SYSTEM_DIRECTIVE = [
   "You are serving an OpenAI Responses API request through Cursor Composer.",
   "The client owns local tool execution. When local inspection, shell commands, or file changes are needed, request a function_call and wait for the function_call_output.",
   "When the input includes function_call_output records, treat them as completed local tool results for your previous function_call requests and continue from those results.",
-  "If the user explicitly names an allowed client tool, use that tool. MCP/server tools exposed as provider_tool names should be requested with SDK mcp using providerIdentifier, toolName, and args.",
+  "If the user explicitly names an allowed client tool, use that tool. Non-builtin client tools and MCP/server tools should be requested with SDK mcp using providerIdentifier, toolName, and args.",
   "For general file creation when no specific client tool is requested, prefer SDK shell when a shell client tool is available; otherwise request write calls with both path and fileText.",
   "Do not claim that you created, edited, inspected, or ran anything locally unless you emitted a function_call and received a function_call_output confirming it.",
   "When starting a dev server or other long-running watcher, start it in the background with output redirected and return immediately.",
@@ -173,7 +173,7 @@ export function prepareOpencodeSdkChatRequest(body: unknown, cursorModel: { id: 
     "You are running through an SDK-compatible OpenCode harness.",
     "OpenCode owns local tool execution. When local inspection, shell commands, or file changes are needed, request a tool call and wait for the tool result.",
     "When the conversation includes LOCAL OPENCODE TOOL RESULT records, treat them as completed SDK tool_call results for your previous tool requests and continue from those results.",
-    "If the user explicitly names an allowed client tool, use that tool. OpenCode MCP/server tools exposed as provider_tool names are called through SDK mcp with providerIdentifier, toolName, and args.",
+    "If the user explicitly names an allowed client tool, use that tool. Non-builtin client tools and OpenCode MCP/server tools are called through SDK mcp with providerIdentifier, toolName, and args.",
     "For creating new files when no specific client tool is requested, request write calls with both path and fileText. Do not use edit for new files or emit edit calls without complete replacement details.",
     "For project scaffolding when no specific client tool is requested, prefer shell with a complete command that creates files using heredocs, installs dependencies, and runs tests; shell requires the command argument.",
     "When starting a dev server or other long-running watcher, start it in the background with output redirected and return immediately; do not request a foreground server command.",
@@ -741,16 +741,10 @@ function appendChatTools(transcript: string[], tools: OpenAiToolSpec[], toolChoi
     "Do not call switch_mode; that setup already completed."
   );
   for (const tool of tools) {
-    transcript.push(
-      JSON.stringify({
-        name: tool.name,
-        ...(tool.description ? { description: tool.description } : {}),
-        ...(tool.parameters !== undefined ? { parameters: tool.parameters } : {})
-      })
-    );
+    transcript.push(JSON.stringify(toolInventoryRecord(tool)));
   }
   if (isRecord(toolChoice) && toolChoice.type === "function" && isRecord(toolChoice.function) && typeof toolChoice.function.name === "string") {
-    transcript.push(`Use the ${toolChoice.function.name} tool if you call a tool.`);
+    transcript.push(requestedToolHint(toolChoice.function.name));
   } else if (toolChoice === "required") {
     transcript.push("You must call at least one tool.");
   }
@@ -764,24 +758,18 @@ function appendResponsesToolInventory(transcript: string[], tools: OpenAiToolSpe
     `Allowed tool names: ${tools.map((tool) => tool.name).join(", ")}`,
     "Use only the client's local tools for filesystem and shell work.",
     "For local work, emit SDK built-in tool calls; the harness translates them to the matching client tool names and schemas.",
-    "When the user names a specific allowed client tool, do not substitute a different tool. MCP/server tools exposed as provider_tool names should be requested with SDK mcp.",
+    "When the user names a specific allowed client tool, do not substitute a different tool. Non-builtin client tools and MCP/server tools should be requested with SDK mcp.",
     "If you need a local tool, emit the tool call before prose. Do not write progress text such as \"creating the file\" instead of calling a tool."
   );
   if (hasCompatibleTool("shell", tools)) {
     transcript.push("A shell client tool is available. For general file creation or overwrite requests, prefer an SDK shell call using mkdir -p and a quoted heredoc.");
   }
   for (const tool of tools) {
-    transcript.push(
-      JSON.stringify({
-        name: tool.name,
-        ...(tool.description ? { description: tool.description } : {}),
-        ...(tool.parameters !== undefined ? { parameters: tool.parameters } : {})
-      })
-    );
+    transcript.push(JSON.stringify(toolInventoryRecord(tool)));
   }
   const selected = toolChoiceFunctionName(toolChoice);
   if (selected) {
-    transcript.push(`Use the ${selected} tool if you call a tool.`);
+    transcript.push(requestedToolHint(selected));
   } else if (toolChoice === "required") {
     transcript.push("You must call at least one tool.");
   }
@@ -794,23 +782,35 @@ function appendSdkToolInventory(transcript: string[], tools: OpenAiToolSpec[], t
     "OPENCODE TOOL INVENTORY:",
     `Allowed tool names: ${tools.map((tool) => tool.name).join(", ")}`,
     "Use only the client's local tools for filesystem and shell work.",
-    "When the user names a specific allowed client tool, do not substitute a different tool. OpenCode MCP/server tools exposed as provider_tool names should be requested with SDK mcp.",
+    "When the user names a specific allowed client tool, do not substitute a different tool. Non-builtin client tools, including OpenCode MCP/server tools, should be requested with SDK mcp using providerIdentifier, toolName, and args.",
     "For general local work, prefer shell/read/write/edit/glob/grep/ls style tool requests when those capabilities are present."
   );
   for (const tool of tools) {
-    transcript.push(
-      JSON.stringify({
-        name: tool.name,
-        ...(tool.description ? { description: tool.description } : {}),
-        ...(tool.parameters !== undefined ? { parameters: tool.parameters } : {})
-      })
-    );
+    transcript.push(JSON.stringify(toolInventoryRecord(tool)));
   }
   if (isRecord(toolChoice) && toolChoice.type === "function" && isRecord(toolChoice.function) && typeof toolChoice.function.name === "string") {
-    transcript.push(`Use the ${toolChoice.function.name} tool if you call a tool.`);
+    transcript.push(requestedToolHint(toolChoice.function.name));
   } else if (toolChoice === "required") {
     transcript.push("You must call at least one tool.");
   }
+}
+
+function toolInventoryRecord(tool: OpenAiToolSpec): Record<string, unknown> {
+  const target = mcpTargetForClientToolName(tool.name);
+  return {
+    name: tool.name,
+    ...(tool.description ? { description: tool.description } : {}),
+    ...(tool.parameters !== undefined ? { parameters: tool.parameters } : {}),
+    ...(target
+      ? {
+          sdk_mcp: {
+            providerIdentifier: target.provider,
+            toolName: target.toolName,
+            args: "match this tool schema"
+          }
+        }
+      : {})
+  };
 }
 
 function appendResponsesWorkspaceMutationRequirement(
@@ -923,14 +923,17 @@ function hasWorkspaceMutationCapability(tools: OpenAiToolSpec[]): boolean {
 }
 
 function mcpTargetForClientToolName(name: string): { provider: string; toolName: string } | undefined {
-  if (isKnownMappedToolName(name)) return undefined;
-  if (name.startsWith("mcp__")) {
-    const parts = name.split("__").filter(Boolean);
+  const trimmed = name.trim();
+  if (!trimmed || isKnownMappedToolName(trimmed)) return undefined;
+  if (trimmed.startsWith("mcp__")) {
+    const parts = trimmed.split("__").filter(Boolean);
     if (parts.length >= 3) return { provider: parts[1], toolName: parts.slice(2).join("__") };
   }
-  const index = name.indexOf("_");
-  if (index <= 0 || index >= name.length - 1) return undefined;
-  return { provider: name.slice(0, index), toolName: name.slice(index + 1) };
+  const index = trimmed.indexOf("_");
+  if (index > 0 && index < trimmed.length - 1) {
+    return { provider: trimmed.slice(0, index), toolName: trimmed.slice(index + 1) };
+  }
+  return { provider: "client", toolName: trimmed };
 }
 
 function isKnownMappedToolName(name: string): boolean {
