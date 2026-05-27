@@ -1576,7 +1576,7 @@ public enum OpenAICompatibility {
         }
 
         let aliases = Set(toolAliases(for: name).map(normalizedName))
-        if let aliased = tools.first(where: { aliases.contains(normalizedName($0.name)) }) {
+        if let aliased = tools.first(where: { aliases.contains(normalizedName($0.name)) && schemaLooksCompatible(sdkToolName: name, tool: $0) }) {
             return aliased
         }
 
@@ -2507,7 +2507,9 @@ public enum OpenAICompatibility {
         case "read", "delete":
             return has(pathPropertyAliases())
         case "edit":
-            return has(pathPropertyAliases()) && has(["oldString", "old_string", "old_str", "old", "search", "newString", "new_string", "new_str", "replacement"])
+            return has(pathPropertyAliases())
+                && has(["oldString", "old_string", "old_str", "old", "oldText", "old_text", "search", "searchString", "search_string"])
+                && has(["newString", "new_string", "new_str", "newText", "new_text", "replacement", "replace", "content"])
         case "grep":
             return has(["pattern", "query", "regex"])
         case "glob":

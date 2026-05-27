@@ -879,6 +879,29 @@ describe("OpenAI compatibility adapter", () => {
     });
   });
 
+  it("does not map SDK edits to schemas missing replacement arguments", () => {
+    const toolCalls = toOpenAiToolCalls({
+      responseId: "chatcmpl_test",
+      tools: [
+        {
+          name: "replace_file",
+          parameters: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              path: { type: "string" },
+              search: { type: "string" }
+            },
+            required: ["path", "search"]
+          }
+        }
+      ],
+      toolCalls: [{ name: "edit", arguments: { path: "src/App.tsx", oldString: "Hello", newString: "Hi" } }]
+    });
+
+    expect(toolCalls).toEqual([]);
+  });
+
   it("maps SDK ls calls to glob tools when a client has no ls tool", () => {
     const toolCalls = toOpenAiToolCalls({
       responseId: "chatcmpl_test",

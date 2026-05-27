@@ -1661,7 +1661,7 @@ function resolveToolSpec(emittedName: string, args: Record<string, unknown>, too
   const match = tools.find((tool) => normalizeToolName(tool.name) === normalized);
   if (match) return match;
   const candidates = toolNameAliases(normalized);
-  const alias = tools.find((tool) => candidates.includes(normalizeToolName(tool.name)));
+  const alias = tools.find((tool) => candidates.includes(normalizeToolName(tool.name)) && schemaLooksCompatible(emittedName, tool));
   if (alias) return alias;
   if (canonicalToolName(emittedName) === "mcp") {
     return resolveSpecificMCPTool(args, tools);
@@ -1787,7 +1787,9 @@ function schemaLooksCompatible(emittedName: string, tool: OpenAiToolSpec): boole
     case "delete":
       return has(pathCandidates());
     case "edit":
-      return has(pathCandidates()) && has(["oldString", "old_string", "old_str", "old", "search", "newString", "new_string", "new_str", "replacement"]);
+      return has(pathCandidates())
+        && has(["oldString", "old_string", "old_str", "old", "oldText", "old_text", "search", "searchString", "search_string"])
+        && has(["newString", "new_string", "new_str", "newText", "new_text", "replacement", "replace", "content"]);
     case "grep":
       return has(["pattern", "query", "regex", "search"]);
     case "glob":
