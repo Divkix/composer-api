@@ -212,13 +212,7 @@ describe("Cursor SDK local-agent bridge", () => {
   });
 
   it("normalizes direct dynamic harness MCP tool events to SDK MCP calls", () => {
-    const normalized = normalizeSDKToolCall({
-      type: "probe_write_file",
-      args: {
-        file_path: "marker.txt",
-        contents: "ok"
-      }
-    }, [
+    const clientTools = [
       {
         name: "probe_write_file",
         parameters: {
@@ -230,7 +224,14 @@ describe("Cursor SDK local-agent bridge", () => {
           required: ["file_path", "contents"]
         }
       }
-    ]);
+    ];
+    const normalized = normalizeSDKToolCall({
+      type: "probe_write_file",
+      args: {
+        file_path: "marker.txt",
+        contents: "ok"
+      }
+    }, clientTools);
 
     expect(normalized).toEqual({
       name: "mcp",
@@ -243,7 +244,78 @@ describe("Cursor SDK local-agent bridge", () => {
         }
       }
     });
-    expect(isForwardableSDKToolCall(normalized)).toBe(true);
+    expect(isForwardableSDKToolCall(normalized, clientTools)).toBe(true);
+  });
+
+  it("waits for complete direct dynamic harness tool arguments before forwarding", () => {
+    const clientTools = [
+      {
+        name: "probe_write_file",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            file_path: { type: "string" },
+            contents: { type: "string", minLength: 1 }
+          },
+          required: ["file_path", "contents"]
+        }
+      }
+    ];
+
+    const partial = normalizeSDKToolCall({
+      type: "probe_write_file",
+      args: { file_path: "marker.txt" }
+    }, clientTools);
+    const invalid = normalizeSDKToolCall({
+      type: "probe_write_file",
+      args: { file_path: "marker.txt", contents: "" }
+    }, clientTools);
+    const complete = normalizeSDKToolCall({
+      type: "probe_write_file",
+      args: { file_path: "marker.txt", contents: "ok" }
+    }, clientTools);
+
+    expect(isForwardableSDKToolCall(partial, clientTools)).toBe(false);
+    expect(isForwardableSDKToolCall(invalid, clientTools)).toBe(false);
+    expect(isForwardableSDKToolCall(complete, clientTools)).toBe(true);
+  });
+
+  it("waits for complete provider-style MCP tool arguments before forwarding", () => {
+    const clientTools = [
+      {
+        name: "mcp__github__create_issue",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            title: { type: "string", minLength: 1 },
+            body: { type: "string", minLength: 1 }
+          },
+          required: ["title", "body"]
+        }
+      }
+    ];
+
+    const partial = normalizeSDKToolCall({
+      type: "mcp",
+      args: {
+        providerIdentifier: "github",
+        toolName: "create_issue",
+        args: { title: "Bug" }
+      }
+    }, clientTools);
+    const complete = normalizeSDKToolCall({
+      type: "mcp",
+      args: {
+        providerIdentifier: "github",
+        toolName: "create_issue",
+        args: { title: "Bug", body: "Details" }
+      }
+    }, clientTools);
+
+    expect(isForwardableSDKToolCall(partial, clientTools)).toBe(false);
+    expect(isForwardableSDKToolCall(complete, clientTools)).toBe(true);
   });
 
   it("exposes dynamic client tool schemas through the forwarding MCP server", () => {

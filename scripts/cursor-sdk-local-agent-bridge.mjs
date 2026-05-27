@@ -168,7 +168,7 @@ async function runLocalAgentBody(input, onRun, onEvent) {
   const captureToolCall = async (toolCall) => {
     if (capturedToolCall || !toolCall) return;
     const normalized = normalizeSDKToolCall(toolCall, input.clientTools);
-    if (!normalized || !isForwardableSDKToolCall(normalized)) return;
+    if (!normalized || !isForwardableSDKToolCall(normalized, input.clientTools)) return;
     capturedToolCall = normalized;
     if (onEvent) onEvent({ type: "tool_call", toolCall: capturedToolCall });
     cancelRequested = true;
@@ -1141,8 +1141,11 @@ function sdkToolNameFromClientMcpTool(toolName) {
   }
 }
 
-function isForwardableSDKToolCall(toolCall) {
+function isForwardableSDKToolCall(toolCall, clientTools = []) {
   const args = toolCall.arguments || {};
+  if (matchingClientToolByName(toolCall.name, clientTools)) {
+    return clientToolPayloadIsComplete(toolCall.name, args, clientTools);
+  }
   switch (canonicalToolName(toolCall.name)) {
     case "shell":
       return hasString(args, "command");
@@ -1166,8 +1169,11 @@ function isForwardableSDKToolCall(toolCall) {
     case "ls":
       return true;
     case "mcp":
-      return hasString(args, "providerIdentifier", "provider", "server")
-        && hasString(args, "toolName", "tool", "name");
+      if (!hasString(args, "providerIdentifier", "provider", "server")
+          || !hasString(args, "toolName", "tool", "name")) {
+        return false;
+      }
+      return mcpClientToolPayloadIsComplete(args, clientTools);
     case "readlints":
     case "semsearch":
     case "todowrite":
@@ -1175,6 +1181,60 @@ function isForwardableSDKToolCall(toolCall) {
     default:
       return Object.keys(args).length > 0;
   }
+}
+
+function clientToolPayloadIsComplete(toolName, payload, clientTools = []) {
+  const tool = matchingClientToolByName(toolName, clientTools);
+  if (!tool) return true;
+  const schema = clientMcpInputSchema(tool.parameters);
+  return validateJsonSchemaValue(payload, schema, tool.name, schema) === null;
+}
+
+function mcpClientToolPayloadIsComplete(args, clientTools = []) {
+  const tool = matchingClientToolForMcpCall(args, clientTools);
+  if (!tool) return true;
+  const payload = clientMcpPayloadArguments(args);
+  const schema = clientMcpInputSchema(tool.parameters);
+  return validateJsonSchemaValue(payload, schema, tool.name, schema) === null;
+}
+
+function matchingClientToolByName(toolName, clientTools = []) {
+  const normalized = normalizeToolName(toolName);
+  return clientTools.find((tool) => normalizeToolName(tool?.name) === normalized) || null;
+}
+
+function matchingClientToolForMcpCall(args, clientTools = []) {
+  const provider = firstString(args, "providerIdentifier", "provider_identifier", "provider", "server", "serverName", "server_name");
+  const toolName = firstString(args, "toolName", "tool_name", "tool", "name");
+  if (!toolName) return null;
+  const candidates = new Set([toolName]);
+  for (const variant of mcpProviderNameVariants(provider)) {
+    candidates.add(`${variant}__${toolName}`);
+    candidates.add(`${variant}_${toolName}`);
+    candidates.add(`mcp__${variant}__${toolName}`);
+    candidates.add(`mcp_${variant}_${toolName}`);
+  }
+  const normalizedCandidates = new Set([...candidates].map(normalizeToolName));
+  return clientTools.find((tool) => normalizedCandidates.has(normalizeToolName(tool?.name))) || null;
+}
+
+function mcpProviderNameVariants(provider) {
+  const trimmed = typeof provider === "string" ? provider.trim() : "";
+  if (!trimmed) return [];
+  const output = [];
+  const append = (value) => {
+    const candidate = String(value || "").trim();
+    if (candidate && !output.includes(candidate)) output.push(candidate);
+  };
+  append(trimmed);
+  for (const separator of [":", "/", "\\", "."]) {
+    const pieces = trimmed.split(separator).filter(Boolean);
+    if (pieces.length) append(pieces[pieces.length - 1]);
+  }
+  for (const prefix of ["mcp__", "mcp_", "mcp-", "mcp:"]) {
+    if (trimmed.toLowerCase().startsWith(prefix)) append(trimmed.slice(prefix.length));
+  }
+  return output;
 }
 
 function canonicalToolName(name) {
