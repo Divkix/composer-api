@@ -112,7 +112,7 @@ export function prepareChatRequest(body: unknown, cursorModel: { id: string } | 
   const tools = record.tool_choice === "none" ? [] : parseChatTools(record.tools);
   const agentMode = options.forceAgentMode === true || tools.length > 0;
   const model = typeof record.model === "string" && record.model.trim() ? record.model.trim() : "composer-2.5";
-  const workspaceMutationRequired = tools.length > 0 && hasWorkspaceMutationIntent(messages);
+  const workspaceMutationRequired = hasWorkspaceMutationIntent(messages) && hasWorkspaceMutationCapability(tools);
   const workspaceMutationDone = workspaceMutationRequired && hasWorkspaceMutationToolCall(messages);
   const transcript: string[] = [tools.length ? TOOL_SYSTEM_DIRECTIVE : agentMode ? AGENT_SYSTEM_DIRECTIVE : SYSTEM_DIRECTIVE];
   appendChatTools(transcript, tools, record.tool_choice);
@@ -166,7 +166,7 @@ export function prepareOpencodeSdkChatRequest(body: unknown, cursorModel: { id: 
 
   const tools = record.tool_choice === "none" ? [] : parseChatTools(record.tools);
   const model = typeof record.model === "string" && record.model.trim() ? record.model.trim() : "composer-2.5";
-  const workspaceMutationRequired = tools.length > 0 && hasWorkspaceMutationIntent(messages);
+  const workspaceMutationRequired = hasWorkspaceMutationIntent(messages) && hasWorkspaceMutationCapability(tools);
   const workspaceMutationDone = workspaceMutationRequired && hasWorkspaceMutationToolCall(messages);
   const latestUserText = latestUserTextFromMessages(messages);
   const transcript: string[] = [
@@ -237,7 +237,7 @@ export function prepareResponsesRequest(
   const tools = record.tool_choice === "none" ? [] : parseChatTools(record.tools);
   const model = typeof record.model === "string" && record.model.trim() ? record.model.trim() : "composer-2.5";
   const latestUserText = latestUserTextFromResponseInput(record.input);
-  const workspaceMutationRequired = tools.length > 0 && hasResponseWorkspaceMutationIntent(record.input);
+  const workspaceMutationRequired = hasResponseWorkspaceMutationIntent(record.input) && hasWorkspaceMutationCapability(tools);
   const workspaceMutationDone = workspaceMutationRequired && hasResponseWorkspaceMutationToolCall(record.input);
   const transcript: string[] = [tools.length ? RESPONSES_TOOL_SYSTEM_DIRECTIVE : SYSTEM_DIRECTIVE];
   appendResponsesToolInventory(transcript, tools, record.tool_choice);
@@ -896,6 +896,14 @@ function toolChoiceFunctionName(toolChoice: unknown): string | undefined {
 
 function hasCompatibleTool(sdkToolName: string, tools: OpenAiToolSpec[]): boolean {
   return tools.some((tool) => schemaLooksCompatible(sdkToolName, tool));
+}
+
+function hasAnyCompatibleTool(sdkToolNames: string[], tools: OpenAiToolSpec[]): boolean {
+  return sdkToolNames.some((sdkToolName) => hasCompatibleTool(sdkToolName, tools));
+}
+
+function hasWorkspaceMutationCapability(tools: OpenAiToolSpec[]): boolean {
+  return hasAnyCompatibleTool(["write", "shell"], tools);
 }
 
 function mcpTargetForClientToolName(name: string): { provider: string; toolName: string } | undefined {

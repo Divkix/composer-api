@@ -291,6 +291,72 @@ describe("OpenAI compatibility adapter", () => {
     expect(prepared.prompt.text).not.toContain("A file-mutating tool call has already been made");
   });
 
+  it("requires SDK workspace mutation for schema-compatible custom writers", () => {
+    const prepared = prepareOpencodeSdkChatRequest(
+      {
+        model: "composer-2.5-sdk",
+        messages: [{ role: "user", content: "build a todo app in vite 8 and react" }],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "project_files",
+              parameters: {
+                type: "object",
+                properties: {
+                  input: {
+                    type: "object",
+                    properties: {
+                      action: { type: "string", enum: ["read", "write", "replace", "delete"] },
+                      path: { type: "string" },
+                      content: { type: "string" },
+                      old: { type: "string" },
+                      replacement: { type: "string" }
+                    },
+                    required: ["action", "path"]
+                  }
+                },
+                required: ["input"]
+              }
+            }
+          }
+        ]
+      },
+      { id: "composer-2.5-sdk" }
+    );
+
+    expect(prepared.prompt.text).toContain("SDK WORKSPACE MUTATION REQUIRED:");
+    expect(prepared.prompt.text).toContain("Your next tool call must be write or shell");
+    expect(prepared.requiresLocalTool).toBe(true);
+  });
+
+  it("does not force SDK workspace mutation when no writable or shell tool is compatible", () => {
+    const prepared = prepareOpencodeSdkChatRequest(
+      {
+        model: "composer-2.5-sdk",
+        messages: [{ role: "user", content: "build a todo app in vite 8 and react" }],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "notify",
+              parameters: {
+                type: "object",
+                properties: { message: { type: "string" } },
+                required: ["message"]
+              }
+            }
+          }
+        ]
+      },
+      { id: "composer-2.5-sdk" }
+    );
+
+    expect(prepared.prompt.text).not.toContain("SDK WORKSPACE MUTATION REQUIRED:");
+    expect(prepared.prompt.text).not.toContain("Your next tool call must be write or shell");
+    expect(prepared.requiresLocalTool).toBe(false);
+  });
+
   it("prefers explicitly requested OpenCode MCP tools in SDK prompts", () => {
     const prepared = prepareOpencodeSdkChatRequest(
       {
