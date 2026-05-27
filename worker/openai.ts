@@ -638,10 +638,11 @@ export function toOpenAiToolCalls(input: {
   const tools = input.tools ?? [];
   return input.toolCalls.flatMap((toolCall, offset) => {
     const index = (input.startIndex ?? 0) + offset;
-    const tool = resolveToolSpec(toolCall.name, toolCall.arguments ?? {}, tools);
+    const normalizedToolCall = normalizeSdkToolCall(toolCall);
+    const tool = resolveToolSpec(normalizedToolCall.name, normalizedToolCall.arguments ?? {}, tools);
     if (!tool && tools.length > 0) return [];
-    const name = tool?.name ?? toolCall.name;
-    const toolArguments = normalizeToolArguments(toolCall.arguments ?? {}, tool, toolCall.name);
+    const name = tool?.name ?? normalizedToolCall.name;
+    const toolArguments = normalizeToolArguments(normalizedToolCall.arguments ?? {}, tool, normalizedToolCall.name);
     return [{
       id: `call_${input.responseId.replace(/[^A-Za-z0-9]/g, "").slice(-18)}_${index}`,
       type: "function",
@@ -651,6 +652,21 @@ export function toOpenAiToolCalls(input: {
       }
     }];
   });
+}
+
+function normalizeSdkToolCall(toolCall: CursorToolCall): CursorToolCall {
+  const args = toolCall.arguments ?? {};
+  if (canonicalToolName(toolCall.name) === "edit") {
+    const streamContent = firstStringArgAllowEmpty(args, "streamContent", "stream_content");
+    const path = firstArg(args, [...pathCandidates(), "target_file", "targetFile"]);
+    if (streamContent !== undefined && shouldIncludeOptionalPath(path)) {
+      const nextArgs: Record<string, unknown> = { ...args, path, fileText: streamContent };
+      delete nextArgs.streamContent;
+      delete nextArgs.stream_content;
+      return { name: "write", arguments: nextArgs };
+    }
+  }
+  return toolCall;
 }
 
 function modelItem(id: string, name: string) {
@@ -2004,10 +2020,15 @@ function patchStyleFileArguments(
     if (content === undefined) return undefined;
     patch = addFilePatch(path, content);
   } else if (emittedCanonical === "edit") {
-    const oldText = firstStringArgAllowEmpty(args, "oldString", "old_string", "old_str", "oldText", "old_text", "search", "searchString", "search_string");
-    const newText = firstStringArgAllowEmpty(args, "newString", "new_string", "new_str", "newText", "new_text", "replacement", "replace", "content");
-    if (oldText === undefined || newText === undefined) return undefined;
-    patch = updateFilePatch(path, oldText, newText);
+    const patchContent = firstStringArgAllowEmpty(args, "patchContent", "patch_content", "patch", "diff", "unifiedDiff", "unified_diff");
+    if (patchContent !== undefined) {
+      patch = patchContent;
+    } else {
+      const oldText = firstStringArgAllowEmpty(args, "oldString", "old_string", "old_str", "oldText", "old_text", "search", "searchString", "search_string");
+      const newText = firstStringArgAllowEmpty(args, "newString", "new_string", "new_str", "newText", "new_text", "replacement", "replace", "content");
+      if (oldText === undefined || newText === undefined) return undefined;
+      patch = updateFilePatch(path, oldText, newText);
+    }
   } else {
     patch = deleteFilePatch(path);
   }

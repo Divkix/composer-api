@@ -2226,6 +2226,56 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual(deleteArguments["path"] as? String, "src/old.tsx")
     }
 
+    func testChatToolCallsMapSDKEditStreamContentToWriteSchema() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[{"role":"user","content":"replace app file"}],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"write_file",
+                "parameters":{
+                  "type":"object",
+                  "properties":{
+                    "filePath":{"type":"string"},
+                    "content":{"type":"string"}
+                  },
+                  "required":["filePath","content"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+
+        let output = CursorSDKOutput(text: "", toolCalls: [
+            CursorToolCall(name: "edit", arguments: [
+                "path": .string("src/App.tsx"),
+                "streamContent": .string("export default function App() { return null }")
+            ])
+        ], agentID: "agent-test", runID: "run-test")
+
+        let object = OpenAICompatibility.chatCompletionResponse(
+            id: "chatcmpl_test",
+            created: 1,
+            prepared: prepared,
+            output: output
+        )
+
+        let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
+        let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        let toolCalls = try XCTUnwrap(message["tool_calls"] as? [[String: Any]])
+        let function = try XCTUnwrap(toolCalls.first?["function"] as? [String: Any])
+        let arguments = try decodedArguments(function)
+
+        XCTAssertEqual(function["name"] as? String, "write_file")
+        XCTAssertEqual(arguments["filePath"] as? String, "src/App.tsx")
+        XCTAssertEqual(arguments["content"] as? String, "export default function App() { return null }")
+        XCTAssertNil(arguments["streamContent"])
+    }
+
     func testChatToolCallsMapSDKOperationsIntoWrapperObjectSchemas() throws {
         let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
         {
@@ -2330,6 +2380,63 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual(editInput["path"] as? String, "src/App.tsx")
         XCTAssertEqual(editInput["old"] as? String, "Hello")
         XCTAssertEqual(editInput["replacement"] as? String, "Hi")
+    }
+
+    func testChatToolCallsMapSDKPatchContentToApplyPatchTool() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[{"role":"user","content":"patch app files"}],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"apply_patch",
+                "parameters":{
+                  "type":"object",
+                  "properties":{
+                    "patch":{"type":"string"},
+                    "path":{"type":"string"}
+                  },
+                  "required":["patch"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+
+        let patch = [
+            "*** Begin Patch",
+            "*** Update File: src/App.tsx",
+            "@@",
+            "-return null",
+            "+return <main />",
+            "*** End Patch"
+        ].joined(separator: "\n")
+        let output = CursorSDKOutput(text: "", toolCalls: [
+            CursorToolCall(name: "edit", arguments: [
+                "path": .string("src/App.tsx"),
+                "patchContent": .string(patch)
+            ])
+        ], agentID: "agent-test", runID: "run-test")
+
+        let object = OpenAICompatibility.chatCompletionResponse(
+            id: "chatcmpl_test",
+            created: 1,
+            prepared: prepared,
+            output: output
+        )
+
+        let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
+        let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        let toolCalls = try XCTUnwrap(message["tool_calls"] as? [[String: Any]])
+        let function = try XCTUnwrap(toolCalls.first?["function"] as? [String: Any])
+        let arguments = try decodedArguments(function)
+
+        XCTAssertEqual(function["name"] as? String, "apply_patch")
+        XCTAssertEqual(arguments["path"] as? String, "src/App.tsx")
+        XCTAssertEqual(arguments["patch"] as? String, patch)
     }
 
     func testChatToolCallsMapSDKFileOperationsToApplyPatchTool() throws {

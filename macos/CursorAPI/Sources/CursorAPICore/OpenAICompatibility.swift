@@ -1356,14 +1356,31 @@ public enum OpenAICompatibility {
     }
 
     private static func resolveToolCall(_ toolCall: CursorToolCall, tools: [OpenAIToolSpec]) -> ResolvedToolCall? {
-        guard let tool = resolveToolSpec(toolCall.name, arguments: toolCall.arguments, tools: tools) else {
+        let normalizedToolCall = normalizeSDKToolCall(toolCall)
+        guard let tool = resolveToolSpec(normalizedToolCall.name, arguments: normalizedToolCall.arguments, tools: tools) else {
             guard tools.isEmpty else { return nil }
-            return ResolvedToolCall(name: toolCall.name, arguments: toolCall.arguments)
+            return ResolvedToolCall(name: normalizedToolCall.name, arguments: normalizedToolCall.arguments)
         }
         return ResolvedToolCall(
             name: tool.name,
-            arguments: normalizeArguments(toolCall.arguments, sdkToolName: toolCall.name, tool: tool)
+            arguments: normalizeArguments(normalizedToolCall.arguments, sdkToolName: normalizedToolCall.name, tool: tool)
         )
+    }
+
+    private static func normalizeSDKToolCall(_ toolCall: CursorToolCall) -> CursorToolCall {
+        guard canonicalToolName(toolCall.name) == "edit",
+              let streamContent = firstArgument(in: toolCall.arguments, keys: ["streamContent", "stream_content"])?.value,
+              let path = firstArgument(in: toolCall.arguments, keys: pathPropertyAliases() + ["target_file", "targetFile"])?.value,
+              shouldIncludeOptionalPath(path) else {
+            return toolCall
+        }
+
+        var arguments = toolCall.arguments
+        arguments["streamContent"] = nil
+        arguments["stream_content"] = nil
+        arguments["path"] = path
+        arguments["fileText"] = streamContent
+        return CursorToolCall(name: "write", arguments: arguments)
     }
 
     private static func resolveToolSpec(_ name: String, arguments: [String: JSONValue], tools: [OpenAIToolSpec]) -> OpenAIToolSpec? {
@@ -2216,11 +2233,15 @@ public enum OpenAICompatibility {
             }
             patch = addFilePatch(path: path, content: content)
         case "edit":
-            guard let oldText = firstArgument(in: arguments, keys: ["oldString", "old_string", "old_str", "oldText", "old_text", "search", "searchString", "search_string"])?.value.stringValue,
-                  let newText = firstArgument(in: arguments, keys: ["newString", "new_string", "new_str", "newText", "new_text", "replacement", "replace", "content"])?.value.stringValue else {
-                return nil
+            if let patchContent = firstArgument(in: arguments, keys: ["patchContent", "patch_content", "patch", "diff", "unifiedDiff", "unified_diff"])?.value.stringValue {
+                patch = patchContent
+            } else {
+                guard let oldText = firstArgument(in: arguments, keys: ["oldString", "old_string", "old_str", "oldText", "old_text", "search", "searchString", "search_string"])?.value.stringValue,
+                      let newText = firstArgument(in: arguments, keys: ["newString", "new_string", "new_str", "newText", "new_text", "replacement", "replace", "content"])?.value.stringValue else {
+                    return nil
+                }
+                patch = updateFilePatch(path: path, oldText: oldText, newText: newText)
             }
-            patch = updateFilePatch(path: path, oldText: oldText, newText: newText)
         default:
             patch = deleteFilePatch(path: path)
         }

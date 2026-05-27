@@ -982,6 +982,41 @@ describe("OpenAI compatibility adapter", () => {
     ]);
   });
 
+  it("maps SDK edit streamContent calls to write-compatible tools", () => {
+    const toolCalls = toOpenAiToolCalls({
+      responseId: "chatcmpl_test",
+      tools: [
+        {
+          name: "write_file",
+          parameters: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              filePath: { type: "string" },
+              content: { type: "string" }
+            },
+            required: ["filePath", "content"]
+          }
+        }
+      ],
+      toolCalls: [
+        {
+          name: "edit",
+          arguments: {
+            path: "src/App.tsx",
+            streamContent: "export default function App() { return null }"
+          }
+        }
+      ]
+    });
+
+    expect(toolCalls[0].function.name).toBe("write_file");
+    expect(JSON.parse(toolCalls[0].function.arguments)).toEqual({
+      filePath: "src/App.tsx",
+      content: "export default function App() { return null }"
+    });
+  });
+
   it("maps SDK calls into wrapper object tool schemas", () => {
     const tools = [
       {
@@ -1043,6 +1078,41 @@ describe("OpenAI compatibility adapter", () => {
       { input: { action: "write", path: "src/App.tsx", content: "export default function App() { return null }" } },
       { input: { action: "replace", path: "src/App.tsx", old: "Hello", replacement: "Hi" } }
     ]);
+  });
+
+  it("maps SDK patchContent edits to apply-patch style tools", () => {
+    const patch = [
+      "*** Begin Patch",
+      "*** Update File: src/App.tsx",
+      "@@",
+      "-return null",
+      "+return <main />",
+      "*** End Patch"
+    ].join("\n");
+    const toolCalls = toOpenAiToolCalls({
+      responseId: "chatcmpl_test",
+      tools: [
+        {
+          name: "apply_patch",
+          parameters: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              patch: { type: "string" },
+              path: { type: "string" }
+            },
+            required: ["patch"]
+          }
+        }
+      ],
+      toolCalls: [{ name: "edit", arguments: { path: "src/App.tsx", patchContent: patch } }]
+    });
+
+    expect(toolCalls[0].function.name).toBe("apply_patch");
+    expect(JSON.parse(toolCalls[0].function.arguments)).toEqual({
+      path: "src/App.tsx",
+      patch
+    });
   });
 
   it("maps SDK file operations to apply-patch style tools", () => {
