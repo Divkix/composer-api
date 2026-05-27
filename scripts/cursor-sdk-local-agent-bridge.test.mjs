@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import http from "node:http";
 import {
   bridgePrompt,
   clientForwardingMcpServerSource,
@@ -1449,6 +1450,93 @@ describe("Cursor SDK local-agent bridge", () => {
     expect(response.error.message).toContain("Outer client callback unavailable");
   });
 
+  it("posts forwarded MCP tool calls to the bridge callback before returning success", async () => {
+    let observedRequest;
+    const callbackServer = http.createServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        observedRequest = {
+          url: request.url,
+          authorization: request.headers.authorization,
+          body: JSON.parse(body)
+        };
+        response.writeHead(200, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({ ok: true, accepted: true }));
+      });
+    });
+
+    await new Promise((resolve) => callbackServer.listen(0, "127.0.0.1", resolve));
+    const address = callbackServer.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    const source = clientForwardingMcpServerSource([]);
+    const child = spawn(process.execPath, ["-e", source], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        CURSOR_SDK_BRIDGE_CALLBACK_URL: `http://127.0.0.1:${port}/client-tool-call`,
+        CURSOR_SDK_BRIDGE_CALLBACK_TOKEN: "bridge-token",
+        CURSOR_SDK_BRIDGE_AGENT_CACHE_KEY: "cache-key"
+      }
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+
+    const message = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "client_shell",
+        arguments: {
+          command: "printf CALLBACK_OK"
+        }
+      }
+    };
+    child.stdin.end(`${JSON.stringify(message)}\n`);
+
+    const exitCode = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        child.kill("SIGKILL");
+        reject(new Error("generated MCP server did not exit"));
+      }, 3000);
+      child.on("error", (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+      child.on("exit", (code) => {
+        clearTimeout(timeout);
+        resolve(code);
+      });
+    });
+    callbackServer.close();
+
+    expect(exitCode).toBe(0);
+    expect(stderr).toBe("");
+    const response = JSON.parse(stdout.trim());
+    expect(response.result.content[0].text).toBe("FORWARDED_TO_OUTER_CLIENT");
+    expect(observedRequest).toEqual({
+      url: "/client-tool-call",
+      authorization: "Bearer bridge-token",
+      body: {
+        cacheKey: "cache-key",
+        toolName: "client_shell",
+        arguments: {
+          command: "printf CALLBACK_OK"
+        }
+      }
+    });
+  });
+
   it("tells the SDK to use client MCP tools instead of built-in local tools", () => {
     const prompt = bridgePrompt("USER: create a file");
 
@@ -1471,14 +1559,12 @@ describe("Cursor SDK local-agent bridge", () => {
     expect(createOptions.local).toEqual({
       cwd: "/tmp/project"
     });
-    expect(createOptions.mcpServers.client.env.CURSOR_SDK_BRIDGE_CALLBACK_URL).toContain("/client-tool-call");
-    expect(createOptions.mcpServers.client.env.CURSOR_SDK_BRIDGE_AGENT_CACHE_KEY).toMatch(/^[a-f0-9]{32}$/);
+    expect(createOptions).not.toHaveProperty("mcpServers");
     expect(createOptions.local).not.toHaveProperty("sandboxOptions");
     expect(createOptions.local).not.toHaveProperty("settingSources");
     expect(sendOptions.model).toEqual({ id: "composer-2.5" });
-    expect(sendOptions.mcpServers.client.env.CURSOR_SDK_BRIDGE_AGENT_CACHE_KEY).toEqual(
-      createOptions.mcpServers.client.env.CURSOR_SDK_BRIDGE_AGENT_CACHE_KEY
-    );
+    expect(sendOptions.mcpServers.client.env.CURSOR_SDK_BRIDGE_CALLBACK_URL).toContain("/client-tool-call");
+    expect(sendOptions.mcpServers.client.env.CURSOR_SDK_BRIDGE_AGENT_CACHE_KEY).toMatch(/^[a-f0-9]{32}$/);
     expect(sendOptions).not.toHaveProperty("local");
   });
 
@@ -1507,12 +1593,11 @@ describe("Cursor SDK local-agent bridge", () => {
       ]
     };
 
-    const baseCreateOptions = localAgentCreateOptions(baseInput);
-    const dynamicCreateOptions = localAgentCreateOptions(dynamicInput);
+    const baseSendOptions = localAgentSendOptions(baseInput);
     const dynamicSendOptions = localAgentSendOptions(dynamicInput);
 
-    expect(dynamicCreateOptions.mcpServers.client.env.CURSOR_SDK_BRIDGE_AGENT_CACHE_KEY).toEqual(
-      baseCreateOptions.mcpServers.client.env.CURSOR_SDK_BRIDGE_AGENT_CACHE_KEY
+    expect(dynamicSendOptions.mcpServers.client.env.CURSOR_SDK_BRIDGE_AGENT_CACHE_KEY).toEqual(
+      baseSendOptions.mcpServers.client.env.CURSOR_SDK_BRIDGE_AGENT_CACHE_KEY
     );
     expect(dynamicSendOptions.mcpServers.client.args[1]).toContain("probe_write_file");
   });

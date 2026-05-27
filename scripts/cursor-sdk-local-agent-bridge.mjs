@@ -387,7 +387,6 @@ function localAgentCreateOptions(input) {
     apiKey: input.apiKey,
     model: { id: input.model },
     name: "API for Cursor local bridge",
-    mcpServers: clientForwardingMcpServers(input.clientTools, agentCacheKey(input)),
     local: {
       cwd: input.workingDirectory
     }
