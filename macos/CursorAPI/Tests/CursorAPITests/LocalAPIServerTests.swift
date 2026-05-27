@@ -3358,6 +3358,70 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertNil(arguments["args"])
     }
 
+    func testChatToolCallsMapSDKMCPArgsToWrappedSingleWordClientTool() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[{"role":"user","content":"use task"}],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"task",
+                "parameters":{
+                  "type":"object",
+                  "properties":{
+                    "input":{
+                      "type":"object",
+                      "properties":{
+                        "description":{"type":"string"},
+                        "prompt":{"type":"string"},
+                        "subagent_type":{"type":"string"}
+                      },
+                      "required":["description","prompt","subagent_type"]
+                    }
+                  },
+                  "required":["input"],
+                  "additionalProperties":false
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+        let toolCall = CursorToolCall(name: "mcp", arguments: [
+            "providerIdentifier": .string("client"),
+            "toolName": .string("task"),
+            "args": .object([
+                "description": .string("Explore files"),
+                "prompt": .string("Find the app entrypoint"),
+                "subagent_type": .string("explore")
+            ])
+        ])
+
+        let object = OpenAICompatibility.chatCompletionResponse(
+            id: "chatcmpl_test",
+            created: 1,
+            prepared: prepared,
+            output: CursorSDKOutput(text: "", toolCalls: [toolCall], agentID: "agent-test", runID: "run-test")
+        )
+
+        let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
+        let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        let toolCalls = try XCTUnwrap(message["tool_calls"] as? [[String: Any]])
+        let function = try XCTUnwrap(toolCalls.first?["function"] as? [String: Any])
+        let arguments = try decodedArguments(function)
+        let input = try XCTUnwrap(arguments["input"] as? [String: Any])
+
+        XCTAssertEqual(function["name"] as? String, "task")
+        XCTAssertEqual(input["description"] as? String, "Explore files")
+        XCTAssertEqual(input["prompt"] as? String, "Find the app entrypoint")
+        XCTAssertEqual(input["subagent_type"] as? String, "explore")
+        XCTAssertNil(arguments["providerIdentifier"])
+        XCTAssertNil(arguments["toolName"])
+        XCTAssertNil(arguments["args"])
+    }
+
     func testChatToolCallsMapSDKMCPArgsToOpenCodeServerToolName() throws {
         let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
         {

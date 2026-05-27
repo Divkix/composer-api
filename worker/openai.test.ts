@@ -882,6 +882,57 @@ describe("OpenAI compatibility adapter", () => {
     });
   });
 
+  it("maps Cursor SDK MCP calls to wrapped single-word client tools", () => {
+    const toolCalls = toOpenAiToolCalls({
+      responseId: "chatcmpl_test",
+      tools: [
+        {
+          name: "task",
+          parameters: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              input: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  description: { type: "string" },
+                  prompt: { type: "string" },
+                  subagent_type: { type: "string" }
+                },
+                required: ["description", "prompt", "subagent_type"]
+              }
+            },
+            required: ["input"]
+          }
+        }
+      ],
+      toolCalls: [
+        {
+          name: "mcp",
+          arguments: {
+            providerIdentifier: "client",
+            toolName: "task",
+            args: {
+              description: "Explore files",
+              prompt: "Find the app entrypoint",
+              subagent_type: "explore"
+            }
+          }
+        }
+      ]
+    });
+
+    expect(toolCalls[0].function.name).toBe("task");
+    expect(JSON.parse(toolCalls[0].function.arguments)).toEqual({
+      input: {
+        description: "Explore files",
+        prompt: "Find the app entrypoint",
+        subagent_type: "explore"
+      }
+    });
+  });
+
   it("feeds OpenCode server tool results back as completed SDK MCP calls", () => {
     const prepared = prepareOpencodeSdkChatRequest(
       {

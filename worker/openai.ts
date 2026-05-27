@@ -2331,7 +2331,7 @@ function normalizeWrapperObjectArguments(
   const nested = normalizeToolArguments(
     args,
     { name: tool.name, description: tool.description, parameters: wrapper.parameters },
-    emittedName,
+    canonicalToolName(emittedName) === "mcp" && canonicalToolName(tool.name) !== "mcp" ? tool.name : emittedName,
     wrapperDepth + 1
   );
   return { [wrapper.key]: nested };
