@@ -443,7 +443,7 @@ JSON
   glob_verified=0
   while kill -0 "$glob_pid" >/dev/null 2>&1; do
     if grep -F '"tool":"glob"' "$glob_output" >/dev/null \
-      && grep -F '"pattern":"**/*"' "$glob_output" >/dev/null \
+      && (grep -F '"pattern":"**/*"' "$glob_output" >/dev/null || grep -F '"pattern":"**/*.tsx"' "$glob_output" >/dev/null) \
       && grep -F 'src/App.tsx' "$glob_output" >/dev/null \
       && ! grep -F "SchemaError" "$glob_output" >/dev/null; then
       glob_verified=1

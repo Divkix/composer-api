@@ -74,6 +74,7 @@ public struct PreparedChatRequest: Equatable, Sendable {
     public var storeResponse: Bool
     public var responseInputItems: [JSONValue]
     public var toolContext: ToolCallContext?
+    public var fallbackLocalToolCall: CursorToolCall?
 }
 
 public enum OpenAICompatibility {
@@ -211,11 +212,15 @@ public enum OpenAICompatibility {
             transcript.append("")
             transcript.append(toolResultContinuation)
         }
-        if shouldRequireLocalTool(for: latestUserText, tools: tools), !mutationToolCallAfterLatestUser {
+        let localToolRequired = shouldRequireLocalTool(for: latestUserText, tools: tools)
+        if localToolRequired, !mutationToolCallAfterLatestUser {
             appendRequiredLocalToolHint(&transcript, tools: tools, latestUserText: latestUserText)
         }
         appendOptions(&transcript, raw)
         let prompt = transcript.joined(separator: "\n")
+        let fallbackLocalToolCall = localToolRequired && !mutationToolCallAfterLatestUser
+            ? deterministicLocalToolCall(for: latestUserText, tools: tools)
+            : nil
         return PreparedChatRequest(
             model: model,
             cursorModelID: model,
@@ -229,7 +234,8 @@ public enum OpenAICompatibility {
             previousResponseID: nil,
             storeResponse: false,
             responseInputItems: [],
-            toolContext: toolContext
+            toolContext: toolContext,
+            fallbackLocalToolCall: fallbackLocalToolCall
         )
     }
 
@@ -262,7 +268,8 @@ public enum OpenAICompatibility {
             previousResponseID: nil,
             storeResponse: false,
             responseInputItems: [],
-            toolContext: nil
+            toolContext: nil,
+            fallbackLocalToolCall: nil
         )
     }
 
@@ -306,7 +313,8 @@ public enum OpenAICompatibility {
             previousResponseID: nil,
             storeResponse: false,
             responseInputItems: normalizedResponseInputItems(raw["input"]),
-            toolContext: nil
+            toolContext: nil,
+            fallbackLocalToolCall: nil
         )
     }
 
@@ -346,12 +354,16 @@ public enum OpenAICompatibility {
             transcript.append("")
             transcript.append(toolResultContinuation)
         }
-        if shouldRequireLocalTool(for: latestUserText, tools: tools),
-           !hasResponseWorkspaceMutationToolCallAfterLatestUser(input, tools: tools) {
+        let localToolRequired = shouldRequireLocalTool(for: latestUserText, tools: tools)
+        let localToolDone = hasResponseWorkspaceMutationToolCallAfterLatestUser(input, tools: tools)
+        if localToolRequired, !localToolDone {
             appendRequiredLocalToolHint(&transcript, tools: tools, latestUserText: latestUserText)
         }
         appendOptions(&transcript, raw)
         let prompt = transcript.joined(separator: "\n")
+        let fallbackLocalToolCall = localToolRequired && !localToolDone
+            ? deterministicLocalToolCall(for: latestUserText, tools: tools)
+            : nil
         return PreparedChatRequest(
             model: model,
             cursorModelID: model,
@@ -365,7 +377,8 @@ public enum OpenAICompatibility {
             previousResponseID: previousResponseID,
             storeResponse: raw["store"] as? Bool ?? true,
             responseInputItems: normalizedResponseInputItems(input),
-            toolContext: toolContext
+            toolContext: toolContext,
+            fallbackLocalToolCall: fallbackLocalToolCall
         )
     }
 
@@ -1326,6 +1339,30 @@ public enum OpenAICompatibility {
                lower.contains(loweredName) || lower.contains(normalized) {
                 return name
             }
+        }
+        return nil
+    }
+
+    private static func deterministicLocalToolCall(for text: String, tools: [OpenAIToolSpec]) -> CursorToolCall? {
+        guard let requestedTool = explicitlyRequestedToolName(in: text, tools: tools) else { return nil }
+        if canonicalToolName(requestedTool) == "glob" {
+            return CursorToolCall(name: "glob", arguments: [
+                "targetDirectory": .string("."),
+                "globPattern": .string(firstGlobPattern(in: text) ?? "**/*")
+            ])
+        }
+        return nil
+    }
+
+    private static func firstGlobPattern(in text: String) -> String? {
+        let trimCharacters = CharacterSet(charactersIn: "`\"',;:()<>")
+        for rawToken in text.components(separatedBy: .whitespacesAndNewlines) {
+            let token = rawToken.trimmingCharacters(in: trimCharacters)
+            guard !token.isEmpty,
+                  token.range(of: #"[*?\[\]{}]"#, options: .regularExpression) != nil else {
+                continue
+            }
+            return token
         }
         return nil
     }
@@ -3109,8 +3146,110 @@ public enum OpenAICompatibility {
             return false
         }
         let types = schemaJSONTypes(object)
-        guard !types.isEmpty else { return true }
-        return types.contains { jsonValue(value, matchesType: $0) }
+        if !types.isEmpty, !types.contains(where: { jsonValue(value, matchesType: $0) }) {
+            return false
+        }
+        if objectConstraintsApply(object, value: value, types: types),
+           !objectValueSatisfiesSchema(value, schema: object) {
+            return false
+        }
+        if arrayConstraintsApply(object, value: value, types: types),
+           !arrayValueSatisfiesSchema(value, schema: object) {
+            return false
+        }
+        return true
+    }
+
+    private static func objectConstraintsApply(_ schema: [String: JSONValue], value: JSONValue, types: [String]) -> Bool {
+        guard schema["properties"] != nil || schema["required"] != nil || schema["additionalProperties"] != nil else {
+            return false
+        }
+        if jsonValue(value, matchesType: "object") {
+            return true
+        }
+        return types.isEmpty || types.contains("object")
+    }
+
+    private static func objectValueSatisfiesSchema(_ value: JSONValue, schema: [String: JSONValue]) -> Bool {
+        guard case .object(let values) = value else { return false }
+        let properties: [String: JSONValue]
+        if case .object(let object)? = schema["properties"] {
+            properties = object
+        } else {
+            properties = [:]
+        }
+        let propertyOrder = Array(properties.keys)
+        let required: [String]
+        if case .array(let values)? = schema["required"] {
+            required = values.compactMap(\.stringValue)
+        } else {
+            required = []
+        }
+        for requiredProperty in required {
+            let property = propertyName(matching: [requiredProperty], in: propertyOrder) ?? requiredProperty
+            guard argumentValueSatisfiesSchema(values[property], schema: properties[property], required: true) else {
+                return false
+            }
+        }
+        for (property, nestedValue) in values {
+            if let propertyName = propertyName(matching: [property], in: propertyOrder),
+               let propertySchema = properties[propertyName] {
+                if !argumentValueSatisfiesSchema(nestedValue, schema: propertySchema, required: false) {
+                    return false
+                }
+                continue
+            }
+            if schema["additionalProperties"] == .bool(false) {
+                return false
+            }
+            if case .object? = schema["additionalProperties"],
+               !argumentValueSatisfiesSchema(nestedValue, schema: schema["additionalProperties"], required: false) {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func arrayConstraintsApply(_ schema: [String: JSONValue], value: JSONValue, types: [String]) -> Bool {
+        guard schema["items"] != nil || schema["prefixItems"] != nil || schema["minItems"] != nil || schema["maxItems"] != nil else {
+            return false
+        }
+        if jsonValue(value, matchesType: "array") {
+            return true
+        }
+        return types.isEmpty || types.contains("array")
+    }
+
+    private static func arrayValueSatisfiesSchema(_ value: JSONValue, schema: [String: JSONValue]) -> Bool {
+        guard case .array(let values) = value else { return false }
+        if let minItems = schema["minItems"]?.integerValue, values.count < minItems {
+            return false
+        }
+        if let maxItems = schema["maxItems"]?.integerValue, values.count > maxItems {
+            return false
+        }
+        let prefixItems: [JSONValue]
+        if case .array(let values)? = schema["prefixItems"] {
+            prefixItems = values
+        } else {
+            prefixItems = []
+        }
+        for index in 0..<min(prefixItems.count, values.count) {
+            if !argumentValueSatisfiesSchema(values[index], schema: prefixItems[index], required: true) {
+                return false
+            }
+        }
+        if schema["items"] == .bool(false), values.count > prefixItems.count {
+            return false
+        }
+        if case .object? = schema["items"] {
+            for index in prefixItems.count..<values.count {
+                if !argumentValueSatisfiesSchema(values[index], schema: schema["items"], required: true) {
+                    return false
+                }
+            }
+        }
+        return true
     }
 
     private static func schemaJSONTypes(_ schema: [String: JSONValue]) -> [String] {
@@ -3157,10 +3296,42 @@ public enum OpenAICompatibility {
     private static func toolRequiredArgumentSummary(_ tool: OpenAIToolSpec) -> String {
         let shape = parameterSchemaShape(tool.parameters)
         guard !shape.required.isEmpty else { return "none" }
-        return shape.required.map { property in
+        return shape.required.sorted().flatMap { property in
             let canonicalProperty = shape.propertyOrder.first { normalizedName($0) == normalizedName(property) } ?? property
-            return "\(canonicalProperty):\(schemaTypeLabel(shape.properties[canonicalProperty]))"
+            return requiredArgumentSummary(prefix: canonicalProperty, schema: shape.properties[canonicalProperty])
         }.joined(separator: ", ")
+    }
+
+    private static func requiredArgumentSummary(prefix: String, schema: JSONValue?) -> [String] {
+        guard case .object(let object)? = schema else {
+            return ["\(prefix):unknown"]
+        }
+        let nestedProperties: [String: JSONValue]
+        if case .object(let properties)? = object["properties"] {
+            nestedProperties = properties
+        } else {
+            nestedProperties = [:]
+        }
+        let nestedRequired: [String]
+        if case .array(let values)? = object["required"] {
+            nestedRequired = values.compactMap(\.stringValue)
+        } else {
+            nestedRequired = []
+        }
+        if !nestedProperties.isEmpty, !nestedRequired.isEmpty {
+            let propertyOrder = Array(nestedProperties.keys)
+            return nestedRequired.sorted().flatMap { property in
+                let canonicalProperty = propertyName(matching: [property], in: propertyOrder) ?? property
+                return requiredArgumentSummary(prefix: "\(prefix).\(canonicalProperty)", schema: nestedProperties[canonicalProperty])
+            }
+        }
+        if case .object? = object["items"] {
+            let itemSummaries = requiredArgumentSummary(prefix: "\(prefix)[]", schema: object["items"])
+            if itemSummaries.contains(where: { $0 != "\(prefix)[]:unknown" }) {
+                return itemSummaries
+            }
+        }
+        return ["\(prefix):\(schemaTypeLabel(schema))"]
     }
 
     private static func toolSchemaPropertySummary(_ tool: OpenAIToolSpec) -> String {
@@ -3548,14 +3719,18 @@ public enum OpenAICompatibility {
     private static func schemaLooksCompatible(sdkToolName: String, tool: OpenAIToolSpec) -> Bool {
         let properties = parameterPropertyNames(tool)
         guard !properties.isEmpty else { return false }
-        if let wrapper = wrapperObjectArgumentProperty(tool: tool, properties: properties) {
-            let nestedTool = OpenAIToolSpec(name: tool.name, description: tool.description, parameters: wrapper.schema)
-            return schemaLooksCompatible(sdkToolName: sdkToolName, tool: nestedTool)
-        }
         func has(_ candidates: [String]) -> Bool {
             propertyName(matching: candidates, in: properties) != nil
         }
         let canonical = canonicalToolName(sdkToolName)
+        if let wrapper = wrapperObjectArgumentProperty(tool: tool, properties: properties) {
+            if canonical == "mcp",
+               has(["toolName", "tool_name", "tool", "name"]) || normalizedName(tool.name).contains("mcp") {
+                return true
+            }
+            let nestedTool = OpenAIToolSpec(name: tool.name, description: tool.description, parameters: wrapper.schema)
+            return schemaLooksCompatible(sdkToolName: sdkToolName, tool: nestedTool)
+        }
         if normalizedName(tool.name) == "strreplaceeditor",
            !["write", "read", "edit"].contains(canonical) {
             return false

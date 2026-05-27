@@ -1104,6 +1104,10 @@ describe("OpenAI compatibility adapter", () => {
 
     expect(prepared.requiresLocalTool).toBe(true);
     expect(prepared.prompt.text).toContain("Use SDK glob now; it will be forwarded to client tool glob");
+    expect(prepared.fallbackLocalToolCall).toEqual({
+      name: "glob",
+      arguments: { targetDirectory: ".", globPattern: "**/*.tsx" }
+    });
 
     const generated = toOpenAiToolCalls({
       responseId: "chatcmpl_explicit_glob",
@@ -3393,6 +3397,51 @@ describe("OpenAI compatibility adapter", () => {
     });
 
     expect(toolCalls).toEqual([]);
+  });
+
+  it("does not emit wrapper MCP calls with schema-invalid nested input", () => {
+    const tools = [
+      {
+        name: "call_mcp_tool",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            serverName: { type: "string" },
+            toolName: { type: "string" },
+            input: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                file_path: { type: "string" },
+                contents: { type: "string" }
+              },
+              required: ["file_path", "contents"]
+            }
+          },
+          required: ["serverName", "toolName", "input"]
+        }
+      }
+    ];
+    const missingContentsCall = {
+      name: "mcp",
+      arguments: {
+        providerIdentifier: "filesystem",
+        toolName: "write_file",
+        args: { file_path: "src/App.tsx" }
+      }
+    };
+
+    const toolCalls = toOpenAiToolCalls({
+      responseId: "chatcmpl_test",
+      tools,
+      toolCalls: [missingContentsCall]
+    });
+    const hint = toolCallRetryHint({ tools, toolCall: missingContentsCall });
+
+    expect(toolCalls).toEqual([]);
+    expect(hint).toContain("input.file_path:string");
+    expect(hint).toContain("input.contents:string");
   });
 
   it("maps SDK file operations to Anthropic-style text editor schemas", () => {

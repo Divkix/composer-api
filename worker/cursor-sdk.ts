@@ -92,6 +92,7 @@ export async function createCursorSdkCompletion(
     sessionOwnerKey?: string;
     workingDirectory?: string;
     requiresLocalTool?: boolean;
+    fallbackToolCall?: CursorToolCall;
     allowToolCall?: (toolCall: CursorToolCall) => ToolCallDecision;
   }
 ): Promise<CursorSdkCompletion> {
@@ -117,6 +118,7 @@ export async function createCursorSdkCompletion(
       modelId: input.model?.id || "composer-2.5",
       workingDirectory: input.workingDirectory,
       requiresLocalTool: input.requiresLocalTool === true,
+      fallbackToolCall: input.fallbackToolCall,
       allowToolCall: input.allowToolCall
     })
   };
@@ -252,6 +254,7 @@ async function* streamCursorLocalSdkRunWithRetry(
     modelId: string;
     workingDirectory?: string;
     requiresLocalTool: boolean;
+    fallbackToolCall?: CursorToolCall;
     allowToolCall?: (toolCall: CursorToolCall) => ToolCallDecision;
   }
 ): AsyncGenerator<CursorTextEvent> {
@@ -291,6 +294,12 @@ async function* streamCursorLocalSdkRunWithRetry(
         ? retryPromptAfterUnsupportedTool(input.prompt, rejectedToolCall, rejectedToolReason, attempt + 1, SDK_TOOL_RETRY_ATTEMPTS)
         : retryPromptAfterMissingTool(input.prompt, attempt + 1, SDK_TOOL_RETRY_ATTEMPTS)
     };
+  }
+
+  if (input.requiresLocalTool && input.fallbackToolCall) {
+    yield { type: "tool_call", toolCall: input.fallbackToolCall };
+    yield { type: "done", finalText: "", toolCalls: [input.fallbackToolCall] };
+    return;
   }
 
   for (const event of lastEvents) yield event;

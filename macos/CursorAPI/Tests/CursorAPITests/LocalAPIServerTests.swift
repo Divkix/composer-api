@@ -1737,6 +1737,10 @@ final class LocalAPIServerTests: XCTestCase {
 
         XCTAssertTrue(first.prompt.contains("LOCAL TOOL REQUIRED FOR THE LATEST USER REQUEST"))
         XCTAssertTrue(first.prompt.contains("Use SDK glob now; it will be forwarded to client tool glob"))
+        XCTAssertEqual(first.fallbackLocalToolCall, CursorToolCall(name: "glob", arguments: [
+            "targetDirectory": .string("."),
+            "globPattern": .string("**/*.tsx")
+        ]))
 
         let continued = try OpenAICompatibility.prepareChatRequest(Data(#"""
         {
@@ -5413,6 +5417,59 @@ final class LocalAPIServerTests: XCTestCase {
             "toolName": .string("create_issue"),
             "args": .object([
                 "body": .string("Missing required title")
+            ])
+        ])
+
+        let object = OpenAICompatibility.chatCompletionResponse(
+            id: "chatcmpl_test",
+            created: 1,
+            prepared: prepared,
+            output: CursorSDKOutput(text: "", toolCalls: [toolCall], agentID: "agent-test", runID: "run-test")
+        )
+
+        let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
+        let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        XCTAssertEqual((message["tool_calls"] as? [[String: Any]])?.count, 0)
+    }
+
+    func testChatToolCallsDoNotEmitWrapperMCPCallsWithSchemaInvalidNestedInput() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[{"role":"user","content":"use mcp"}],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"call_mcp_tool",
+                "parameters":{
+                  "type":"object",
+                  "additionalProperties":false,
+                  "properties":{
+                    "serverName":{"type":"string"},
+                    "toolName":{"type":"string"},
+                    "input":{
+                      "type":"object",
+                      "additionalProperties":false,
+                      "properties":{
+                        "file_path":{"type":"string"},
+                        "contents":{"type":"string"}
+                      },
+                      "required":["file_path","contents"]
+                    }
+                  },
+                  "required":["serverName","toolName","input"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+        let toolCall = CursorToolCall(name: "mcp", arguments: [
+            "providerIdentifier": .string("filesystem"),
+            "toolName": .string("write_file"),
+            "args": .object([
+                "file_path": .string("src/App.tsx")
             ])
         ])
 

@@ -145,6 +145,11 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
 
             let needsRetry = unsupportedToolCall != nil || shouldRetryMissing
             guard needsRetry, attempt < Self.toolRetryAttempts else {
+                if let fallback = prepared.fallbackLocalToolCall,
+                   shouldRetryMissing || unsupportedToolCall != nil {
+                    onEvent(.toolCall(fallback))
+                    return CursorSDKOutput(text: "", toolCalls: [fallback], agentID: agentID, runID: runID)
+                }
                 for event in buffered.events() {
                     onEvent(event)
                 }

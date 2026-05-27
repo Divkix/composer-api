@@ -14,6 +14,7 @@ export interface PreparedRequest {
   responseMetadata: Record<string, unknown>;
   tools: OpenAiToolSpec[];
   requiresLocalTool: boolean;
+  fallbackLocalToolCall?: CursorToolCall;
   previousResponseId?: string;
   storeResponse?: boolean;
   responseInputItems?: unknown[];
@@ -223,6 +224,9 @@ export function prepareOpencodeSdkChatRequest(body: unknown, cursorModel: { id: 
   }
   appendChatOptions(transcript, record);
   const text = transcript.join("\n");
+  const fallbackLocalToolCall = workspaceMutationRequired && !workspaceMutationDone
+    ? deterministicLocalToolCall(latestUserText, tools)
+    : undefined;
   return {
     model,
     cursorModel,
@@ -236,6 +240,7 @@ export function prepareOpencodeSdkChatRequest(body: unknown, cursorModel: { id: 
     },
     tools,
     requiresLocalTool: workspaceMutationRequired && !workspaceMutationDone,
+    ...(fallbackLocalToolCall ? { fallbackLocalToolCall } : {}),
     storeResponse: false,
     toolContext
   };
@@ -1016,6 +1021,29 @@ function explicitlyRequestedToolName(text: string, tools: OpenAiToolSpec[]): str
     }
     return (name.includes("_") || name.includes("-")) && (lower.includes(loweredName) || lower.includes(normalized));
   })?.name;
+}
+
+function deterministicLocalToolCall(text: string, tools: OpenAiToolSpec[]): CursorToolCall | undefined {
+  const requestedTool = explicitlyRequestedToolName(text, tools);
+  if (!requestedTool) return undefined;
+  if (canonicalToolName(requestedTool) === "glob") {
+    return {
+      name: "glob",
+      arguments: {
+        targetDirectory: ".",
+        globPattern: firstGlobPatternFromText(text) || "**/*"
+      }
+    };
+  }
+  return undefined;
+}
+
+function firstGlobPatternFromText(text: string): string | undefined {
+  for (const rawToken of text.split(/\s+/)) {
+    const token = rawToken.replace(/^[`"',;:()<>]+|[`"',;:()<>]+$/g, "");
+    if (token && looksLikeGlobPattern(token)) return token;
+  }
+  return undefined;
 }
 
 function requestedToolHint(toolName: string): string {
@@ -2138,13 +2166,16 @@ function normalizeToolArguments(
 function schemaLooksCompatible(emittedName: string, tool: OpenAiToolSpec): boolean {
   const schema = toolParameterSchema(tool);
   if (!schema.properties.length) return false;
-  const wrapper = wrapperObjectArgumentProperty(tool, schema);
-  if (wrapper) {
-    return schemaLooksCompatible(emittedName, { ...tool, parameters: wrapper.parameters });
-  }
   const normalizedProperties = new Map(schema.properties.map((property) => [normalizeToolName(property), property]));
   const has = (candidates: string[]) => Boolean(firstMatchingProperty(candidates, schema.properties, normalizedProperties));
   const canonical = canonicalToolName(emittedName);
+  const wrapper = wrapperObjectArgumentProperty(tool, schema);
+  if (wrapper) {
+    if (canonical === "mcp" && (has(["toolName", "tool_name", "tool", "name"]) || normalizeToolName(tool.name).includes("mcp"))) {
+      return true;
+    }
+    return schemaLooksCompatible(emittedName, { ...tool, parameters: wrapper.parameters });
+  }
   if (normalizeToolName(tool.name) === "strreplaceeditor" && !["write", "read", "edit"].includes(canonical)) {
     return false;
   }
@@ -2731,8 +2762,64 @@ function argumentValueSatisfiesSchema(value: unknown, schema: unknown, required:
   const allOf = composedToolSchemas(record.allOf);
   if (allOf.length && !allOf.every((item) => argumentValueSatisfiesSchema(value, item, true))) return false;
   const types = schemaJsonTypes(record);
-  if (!types.length) return true;
-  return types.some((type) => jsonValueMatchesType(value, type));
+  if (types.length && !types.some((type) => jsonValueMatchesType(value, type))) return false;
+  if (objectConstraintsApply(record, value, types) && !objectValueSatisfiesSchema(value, record)) return false;
+  if (arrayConstraintsApply(record, value, types) && !arrayValueSatisfiesSchema(value, record)) return false;
+  return true;
+}
+
+function objectConstraintsApply(schema: Record<string, unknown>, value: unknown, types: string[]): boolean {
+  if (!isRecord(schema.properties) && !Array.isArray(schema.required) && schema.additionalProperties === undefined) return false;
+  if (jsonValueMatchesType(value, "object")) return true;
+  return !types.length || types.includes("object");
+}
+
+function objectValueSatisfiesSchema(value: unknown, schema: Record<string, unknown>): boolean {
+  if (!jsonValueMatchesType(value, "object")) return false;
+  const recordValue = value as Record<string, unknown>;
+  const properties = isRecord(schema.properties) ? schema.properties : {};
+  const propertyNames = Object.keys(properties);
+  const normalizedProperties = new Map(propertyNames.map((property) => [normalizeToolName(property), property]));
+  const required = Array.isArray(schema.required) ? schema.required.filter((item): item is string => typeof item === "string") : [];
+  for (const requiredProperty of required) {
+    const property = firstMatchingProperty([requiredProperty], propertyNames, normalizedProperties) ?? requiredProperty;
+    if (!argumentValueSatisfiesSchema(recordValue[property], properties[property], true)) return false;
+  }
+  for (const [property, nestedValue] of Object.entries(recordValue)) {
+    const propertyName = firstMatchingProperty([property], propertyNames, normalizedProperties);
+    if (propertyName) {
+      if (!argumentValueSatisfiesSchema(nestedValue, properties[propertyName], false)) return false;
+      continue;
+    }
+    if (schema.additionalProperties === false) return false;
+    if (isRecord(schema.additionalProperties) && !argumentValueSatisfiesSchema(nestedValue, schema.additionalProperties, false)) return false;
+  }
+  return true;
+}
+
+function arrayConstraintsApply(schema: Record<string, unknown>, value: unknown, types: string[]): boolean {
+  if (schema.items === undefined && !Array.isArray(schema.prefixItems) && schema.minItems === undefined && schema.maxItems === undefined) return false;
+  if (Array.isArray(value)) return true;
+  return !types.length || types.includes("array");
+}
+
+function arrayValueSatisfiesSchema(value: unknown, schema: Record<string, unknown>): boolean {
+  if (!Array.isArray(value)) return false;
+  const minItems = typeof schema.minItems === "number" && Number.isFinite(schema.minItems) ? schema.minItems : undefined;
+  const maxItems = typeof schema.maxItems === "number" && Number.isFinite(schema.maxItems) ? schema.maxItems : undefined;
+  if (minItems !== undefined && value.length < minItems) return false;
+  if (maxItems !== undefined && value.length > maxItems) return false;
+  const prefixItems = Array.isArray(schema.prefixItems) ? schema.prefixItems : [];
+  for (let index = 0; index < prefixItems.length && index < value.length; index += 1) {
+    if (!argumentValueSatisfiesSchema(value[index], prefixItems[index], true)) return false;
+  }
+  if (schema.items === false && value.length > prefixItems.length) return false;
+  if (isRecord(schema.items)) {
+    for (let index = prefixItems.length; index < value.length; index += 1) {
+      if (!argumentValueSatisfiesSchema(value[index], schema.items, true)) return false;
+    }
+  }
+  return true;
 }
 
 function schemaJsonTypes(schema: Record<string, unknown>): string[] {
@@ -2769,10 +2856,29 @@ function jsonValueMatchesType(value: unknown, type: string): boolean {
 function toolRequiredArgumentSummary(tool: OpenAiToolSpec): string {
   const schema = toolParameterSchema(tool);
   if (!schema.required.length) return "none";
-  return schema.required.map((property) => {
+  return schema.required.flatMap((property) => {
     const canonicalProperty = schema.properties.find((item) => normalizeToolName(item) === normalizeToolName(property)) ?? property;
-    return `${canonicalProperty}:${schemaTypeLabel(schema.propertySchemas[canonicalProperty])}`;
+    return requiredArgumentSummaryForSchema(canonicalProperty, schema.propertySchemas[canonicalProperty]);
   }).join(", ");
+}
+
+function requiredArgumentSummaryForSchema(prefix: string, schema: unknown): string[] {
+  if (!isRecord(schema)) return [`${prefix}:unknown`];
+  const nestedProperties = isRecord(schema.properties) ? schema.properties : {};
+  const nestedNames = Object.keys(nestedProperties);
+  const nestedRequired = Array.isArray(schema.required) ? schema.required.filter((item): item is string => typeof item === "string") : [];
+  if (nestedNames.length && nestedRequired.length) {
+    const normalizedProperties = new Map(nestedNames.map((property) => [normalizeToolName(property), property]));
+    return nestedRequired.flatMap((property) => {
+      const canonicalProperty = firstMatchingProperty([property], nestedNames, normalizedProperties) ?? property;
+      return requiredArgumentSummaryForSchema(`${prefix}.${canonicalProperty}`, nestedProperties[canonicalProperty]);
+    });
+  }
+  if (isRecord(schema.items)) {
+    const itemSummaries = requiredArgumentSummaryForSchema(`${prefix}[]`, schema.items);
+    if (itemSummaries.some((item) => item !== `${prefix}[]:unknown`)) return itemSummaries;
+  }
+  return [`${prefix}:${schemaTypeLabel(schema)}`];
 }
 
 function toolSchemaPropertySummary(tool: OpenAiToolSpec): string {
