@@ -2243,6 +2243,10 @@ public enum OpenAICompatibility {
             copy("offset", as: ["start", "startLine", "start_line"])
             copy("limit", as: ["maxLines", "max_lines", "lineCount", "line_count"])
             copy("includeLineNumbers", as: ["include_line_numbers", "lineNumbers", "line_numbers"])
+            if canonical == "read",
+               let range = readRangeArgumentValue(arguments, tool: tool, properties: properties, context: context) {
+                output[range.key] = range.value
+            }
         case "edit":
             copy("path", as: pathPropertyAliases())
             copy("oldString", as: oldTextAliases())
@@ -3376,6 +3380,9 @@ public enum OpenAICompatibility {
         case "read":
             copyOptionalArgument(&output, from: arguments, properties: properties, candidates: ["offset", "start", "startLine", "start_line"])
             copyOptionalArgument(&output, from: arguments, properties: properties, candidates: ["limit", "maxLines", "max_lines", "lineCount", "line_count"])
+            if let range = readRangeArgumentValue(arguments, tool: tool, properties: properties, context: context) {
+                output[range.key] = range.value
+            }
         default:
             break
         }
@@ -3406,6 +3413,20 @@ public enum OpenAICompatibility {
     private struct NamedJSONValue {
         var key: String
         var value: JSONValue
+    }
+
+    private static func readRangeArgumentValue(
+        _ arguments: [String: JSONValue],
+        tool: OpenAIToolSpec,
+        properties: [String],
+        context: ToolCallContext?
+    ) -> NamedJSONValue? {
+        guard let range = viewRange(from: arguments),
+              let key = propertyName(matching: ["view_range", "viewRange", "range"], in: properties),
+              toolPropertyPrefersArray(tool: tool, property: key) else {
+            return nil
+        }
+        return NamedJSONValue(key: key, value: normalizeToolArgumentValue(range, property: key, tool: tool, context: context))
     }
 
     private static func editArrayArgumentValue(

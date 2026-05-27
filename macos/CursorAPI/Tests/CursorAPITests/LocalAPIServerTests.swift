@@ -3494,6 +3494,114 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual(deleteArguments["path"] as? String, "src/old.tsx")
     }
 
+    func testChatToolCallsMapSDKReadToArrayRangeSchemas() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[{"role":"user","content":"read part of a file"}],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"read_file",
+                "parameters":{
+                  "type":"object",
+                  "additionalProperties":false,
+                  "properties":{
+                    "path":{"type":"string"},
+                    "range":{"type":"array","items":{"type":"integer"},"minItems":2,"maxItems":2}
+                  },
+                  "required":["path","range"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+
+        let object = OpenAICompatibility.chatCompletionResponse(
+            id: "chatcmpl_read_range",
+            created: 1,
+            prepared: prepared,
+            output: CursorSDKOutput(text: "", toolCalls: [
+                CursorToolCall(name: "read", arguments: [
+                    "path": .string("src/App.tsx"),
+                    "offset": .number(10),
+                    "limit": .number(20)
+                ])
+            ], agentID: "agent-test", runID: "run-test")
+        )
+
+        let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
+        let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        let toolCalls = try XCTUnwrap(message["tool_calls"] as? [[String: Any]])
+        let function = try XCTUnwrap(toolCalls.first?["function"] as? [String: Any])
+        let arguments = try decodedArguments(function)
+        let range = try XCTUnwrap(arguments["range"] as? [Any])
+
+        XCTAssertEqual(function["name"] as? String, "read_file")
+        XCTAssertEqual(arguments["path"] as? String, "src/App.tsx")
+        XCTAssertEqual((range[0] as? NSNumber)?.intValue, 10)
+        XCTAssertEqual((range[1] as? NSNumber)?.intValue, 29)
+        XCTAssertNil(arguments["offset"])
+        XCTAssertNil(arguments["limit"])
+    }
+
+    func testChatToolCallsMapSDKReadToActionBasedArrayRangeSchemas() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[{"role":"user","content":"read part of a file"}],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"file_manager",
+                "parameters":{
+                  "type":"object",
+                  "additionalProperties":false,
+                  "properties":{
+                    "action":{"type":"string","enum":["read","write","replace","delete"]},
+                    "path":{"type":"string"},
+                    "view_range":{"type":"array","items":{"type":"integer"},"minItems":2,"maxItems":2}
+                  },
+                  "required":["action","path","view_range"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+
+        let object = OpenAICompatibility.chatCompletionResponse(
+            id: "chatcmpl_action_read_range",
+            created: 1,
+            prepared: prepared,
+            output: CursorSDKOutput(text: "", toolCalls: [
+                CursorToolCall(name: "read", arguments: [
+                    "path": .string("src/App.tsx"),
+                    "offset": .number(5),
+                    "limit": .number(10)
+                ])
+            ], agentID: "agent-test", runID: "run-test")
+        )
+
+        let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
+        let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        let toolCalls = try XCTUnwrap(message["tool_calls"] as? [[String: Any]])
+        let function = try XCTUnwrap(toolCalls.first?["function"] as? [String: Any])
+        let arguments = try decodedArguments(function)
+        let viewRange = try XCTUnwrap(arguments["view_range"] as? [Any])
+
+        XCTAssertEqual(function["name"] as? String, "file_manager")
+        XCTAssertEqual(arguments["action"] as? String, "read")
+        XCTAssertEqual(arguments["path"] as? String, "src/App.tsx")
+        XCTAssertEqual((viewRange[0] as? NSNumber)?.intValue, 5)
+        XCTAssertEqual((viewRange[1] as? NSNumber)?.intValue, 14)
+        XCTAssertNil(arguments["offset"])
+        XCTAssertNil(arguments["limit"])
+    }
+
     func testChatToolCallsMapSDKEditStreamContentToWriteSchema() throws {
         let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
         {
@@ -6854,6 +6962,55 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual(arguments["content"] as? String, "<h1>Hello</h1>")
         XCTAssertNil(arguments["path"])
         XCTAssertNil(arguments["fileText"])
+    }
+
+    func testResponsesFunctionCallsMapSDKReadToArrayRangeSchemas() throws {
+        let prepared = try OpenAICompatibility.prepareResponsesRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "input":"read part of a file",
+          "tools":[
+            {
+              "type":"function",
+              "name":"read_file",
+              "parameters":{
+                "type":"object",
+                "additionalProperties":false,
+                "properties":{
+                  "file_path":{"type":"string"},
+                  "view_range":{"type":"array","items":{"type":"integer"},"minItems":2,"maxItems":2}
+                },
+                "required":["file_path","view_range"]
+              }
+            }
+          ]
+        }
+        """#.utf8))
+
+        let object = OpenAICompatibility.responseObject(
+            id: "resp_read_range",
+            created: 1,
+            prepared: prepared,
+            output: CursorSDKOutput(text: "", toolCalls: [
+                CursorToolCall(name: "read", arguments: [
+                    "path": .string("src/App.tsx"),
+                    "offset": .number(5),
+                    "limit": .number(10)
+                ])
+            ], agentID: "agent-test", runID: "run-test")
+        )
+
+        let output = try XCTUnwrap(object["output"] as? [[String: Any]])
+        let functionCall = try XCTUnwrap(output.first { ($0["type"] as? String) == "function_call" })
+        let arguments = try decodedArguments(functionCall)
+        let viewRange = try XCTUnwrap(arguments["view_range"] as? [Any])
+
+        XCTAssertEqual(functionCall["name"] as? String, "read_file")
+        XCTAssertEqual(arguments["file_path"] as? String, "src/App.tsx")
+        XCTAssertEqual((viewRange[0] as? NSNumber)?.intValue, 5)
+        XCTAssertEqual((viewRange[1] as? NSNumber)?.intValue, 14)
+        XCTAssertNil(arguments["offset"])
+        XCTAssertNil(arguments["limit"])
     }
 
     func testResponsesFunctionCallsPreferSchemaValidProviderSpecificMCPTool() throws {
