@@ -1052,6 +1052,7 @@ function bridgePrompt(prompt) {
     "If the prompt below says LOCAL TOOL REQUIRED, your response must be exactly one client MCP forwarding tool call and no prose.",
     "When the outer prompt says to use SDK shell, write, read, edit, delete, glob, grep, ls, readLints, semSearch, or todowrite, satisfy that by calling the matching client_shell, client_write, client_read, client_edit, client_delete, client_glob, client_grep, client_ls, client_read_lints, client_sem_search, or client_todo_write MCP tool.",
     "If the request below mentions an SDK routing map or asks for SDK mcp, satisfy that by calling the matching client MCP forwarding tool.",
+    "For harness MCP tools named like mcp__server__tool or server_tool, still call the local client MCP server with toolName set to the exact harness tool name. Do not call a separate provider/server unless that exact server is exposed by the SDK runtime.",
     "For file creation, file edits, deletes, package installs, tests, builds, and project scaffolds, use client_shell or the exact harness shell tool with a complete command. Include mkdir -p for parent directories and quoted heredocs or a small script with the full intended content.",
     "When creating Vite 8 React projects, use @vitejs/plugin-react ^5 with vite ^8, or omit the plugin if it is not needed. Do not pair Vite 8 with @vitejs/plugin-react 4.",
     "For inspection-only work, use client_read, client_grep, client_glob, or client_ls. Do not claim local work is done until a tool result is present in the transcript.",

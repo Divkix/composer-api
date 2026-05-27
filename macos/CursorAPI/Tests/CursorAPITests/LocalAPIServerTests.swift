@@ -1742,7 +1742,7 @@ final class LocalAPIServerTests: XCTestCase {
         """#.utf8))
 
         XCTAssertTrue(prepared.prompt.contains("LOCAL TOOL REQUIRED FOR THE LATEST USER REQUEST"))
-        XCTAssertTrue(prepared.prompt.contains("Use SDK mcp now with providerIdentifier \"probe\", toolName \"write_file\""))
+        XCTAssertTrue(prepared.prompt.contains("Use SDK mcp now with providerIdentifier \"client\", toolName \"probe_write_file\""))
         XCTAssertTrue(prepared.prompt.contains("Do not substitute another tool"))
         XCTAssertFalse(prepared.prompt.contains("Use SDK shell now. For creating or overwriting a file"))
     }
@@ -1900,6 +1900,41 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertTrue(prepared.prompt.contains("Use SDK mcp now with providerIdentifier \"client\", toolName \"webfetch\""))
     }
 
+    func testChatToolInventoryAdvertisesProviderStyleHarnessToolsThroughClientBridge() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model": "composer-2.5",
+          "messages": [
+            {"role": "user", "content": "Use the mcp__filesystem__write_file tool to write src/App.tsx."}
+          ],
+          "tool_choice": {"type":"function","function":{"name":"mcp__filesystem__write_file"}},
+          "tools": [
+            {
+              "type": "function",
+              "function": {
+                "name": "mcp__filesystem__write_file",
+                "description": "Write a file through the harness MCP server",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "file_path": { "type": "string" },
+                    "contents": { "type": "string" }
+                  },
+                  "required": ["file_path", "contents"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+
+        XCTAssertTrue(prepared.prompt.contains("\"providerIdentifier\":\"client\""))
+        XCTAssertTrue(prepared.prompt.contains("\"toolName\":\"mcp__filesystem__write_file\""))
+        XCTAssertTrue(prepared.prompt.contains("\"client\":\"mcp__filesystem__write_file\""))
+        XCTAssertTrue(prepared.prompt.contains("Use SDK mcp now with providerIdentifier \"client\", toolName \"mcp__filesystem__write_file\""))
+        XCTAssertFalse(prepared.prompt.contains("providerIdentifier \"filesystem\", toolName \"write_file\""))
+    }
+
     func testChatToolResultsRenderPriorCallsAndContinuationPrompt() throws {
         let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
         {
@@ -1987,8 +2022,8 @@ final class LocalAPIServerTests: XCTestCase {
         let nested = try XCTUnwrap(arguments["args"] as? [String: Any])
 
         XCTAssertEqual(feedback["toolName"] as? String, "mcp")
-        XCTAssertEqual(arguments["providerIdentifier"] as? String, "filesystem")
-        XCTAssertEqual(arguments["toolName"] as? String, "write_file")
+        XCTAssertEqual(arguments["providerIdentifier"] as? String, "client")
+        XCTAssertEqual(arguments["toolName"] as? String, "mcp__filesystem__write_file")
         XCTAssertEqual(nested["file_path"] as? String, "src/App.tsx")
         XCTAssertEqual(nested["contents"] as? String, "export default function App() { return null }")
     }
@@ -6457,6 +6492,59 @@ final class LocalAPIServerTests: XCTestCase {
         let toolCall = CursorToolCall(name: "mcp", arguments: [
             "providerIdentifier": .string("filesystem"),
             "toolName": .string("write_file"),
+            "args": .object([
+                "file_path": .string("src/App.tsx"),
+                "contents": .string("export default function App() { return null }")
+            ])
+        ])
+
+        let object = OpenAICompatibility.chatCompletionResponse(
+            id: "chatcmpl_test",
+            created: 1,
+            prepared: prepared,
+            output: CursorSDKOutput(text: "", toolCalls: [toolCall], agentID: "agent-test", runID: "run-test")
+        )
+
+        let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
+        let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        let toolCalls = try XCTUnwrap(message["tool_calls"] as? [[String: Any]])
+        let function = try XCTUnwrap(toolCalls.first?["function"] as? [String: Any])
+        let arguments = try decodedArguments(function)
+
+        XCTAssertEqual(function["name"] as? String, "mcp__filesystem__write_file")
+        XCTAssertEqual(arguments["filePath"] as? String, "src/App.tsx")
+        XCTAssertEqual(arguments["content"] as? String, "export default function App() { return null }")
+        XCTAssertNil(arguments["providerIdentifier"])
+        XCTAssertNil(arguments["toolName"])
+        XCTAssertNil(arguments["args"])
+    }
+
+    func testChatToolCallsMapClientExactSDKMCPArgsToProviderStyleHarnessTool() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[{"role":"user","content":"use the harness mcp writer"}],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"mcp__filesystem__write_file",
+                "parameters":{
+                  "type":"object",
+                  "properties":{
+                    "filePath":{"type":"string"},
+                    "content":{"type":"string"}
+                  },
+                  "required":["filePath","content"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+        let toolCall = CursorToolCall(name: "mcp", arguments: [
+            "providerIdentifier": .string("client"),
+            "toolName": .string("mcp__filesystem__write_file"),
             "args": .object([
                 "file_path": .string("src/App.tsx"),
                 "contents": .string("export default function App() { return null }")

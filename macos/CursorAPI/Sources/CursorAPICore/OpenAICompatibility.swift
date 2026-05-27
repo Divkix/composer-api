@@ -1340,20 +1340,6 @@ public enum OpenAICompatibility {
         if isKnownMappedToolName(trimmed) {
             return includeMapped ? (provider: "client", toolName: trimmed) : nil
         }
-        if trimmed.hasPrefix("mcp__") {
-            let parts = trimmed.components(separatedBy: "__").filter { !$0.isEmpty }
-            if parts.count >= 3 {
-                return (provider: parts[1], toolName: parts.dropFirst(2).joined(separator: "__"))
-            }
-        }
-        if let separator = trimmed.firstIndex(of: "_"),
-           separator != trimmed.startIndex,
-           separator < trimmed.index(before: trimmed.endIndex) {
-            let provider = String(trimmed[..<separator])
-            let toolName = String(trimmed[trimmed.index(after: separator)...])
-            guard !provider.isEmpty, !toolName.isEmpty else { return nil }
-            return (provider: provider, toolName: toolName)
-        }
         return (provider: "client", toolName: trimmed)
     }
 

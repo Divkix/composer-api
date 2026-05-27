@@ -211,6 +211,46 @@ describe("Cursor SDK local-agent bridge", () => {
     expect(isForwardableSDKToolCall(normalized)).toBe(true);
   });
 
+  it("keeps provider-style harness tools on the local client MCP server", () => {
+    const clientTools = [
+      {
+        name: "mcp__filesystem__write_file",
+        parameters: {
+          type: "object",
+          properties: {
+            file_path: { type: "string" },
+            contents: { type: "string" }
+          },
+          required: ["file_path", "contents"]
+        }
+      }
+    ];
+    const normalized = normalizeSDKToolCall({
+      type: "mcp",
+      args: {
+        providerIdentifier: "client",
+        toolName: "mcp__filesystem__write_file",
+        args: {
+          file_path: "marker.txt",
+          contents: "ok"
+        }
+      }
+    }, clientTools);
+
+    expect(normalized).toEqual({
+      name: "mcp",
+      arguments: {
+        providerIdentifier: "client",
+        toolName: "mcp__filesystem__write_file",
+        args: {
+          file_path: "marker.txt",
+          contents: "ok"
+        }
+      }
+    });
+    expect(isForwardableSDKToolCall(normalized, clientTools)).toBe(true);
+  });
+
   it("normalizes direct dynamic harness MCP tool events to SDK MCP calls", () => {
     const clientTools = [
       {
