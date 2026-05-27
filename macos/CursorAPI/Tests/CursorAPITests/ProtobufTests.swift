@@ -52,6 +52,31 @@ final class ProtobufTests: XCTestCase {
         XCTAssertFalse(runID.hasPrefix("msg-"))
     }
 
+    func testToolCallRetryHintIncludesRequiredClientSchemaArguments() {
+        let tool = OpenAIToolSpec(
+            name: "write",
+            description: nil,
+            parameters: .object([
+                "type": .string("object"),
+                "additionalProperties": .bool(false),
+                "properties": .object([
+                    "filePath": .object(["type": .string("string")]),
+                    "content": .object(["type": .string("string")])
+                ]),
+                "required": .array([.string("filePath"), .string("content")])
+            ])
+        )
+        let hint = OpenAICompatibility.toolCallRetryHint(
+            CursorToolCall(name: "write", arguments: ["path": .string("src/App.tsx")]),
+            tools: [tool]
+        )
+
+        XCTAssertTrue(hint.contains("SDK write mapped to client write"))
+        XCTAssertTrue(hint.contains("Normalized arguments"))
+        XCTAssertTrue(hint.contains("filePath"))
+        XCTAssertTrue(hint.contains("content:string"))
+    }
+
     func testDetectsSDKTurnEndedMarker() {
         let turnEnded = Proto.message([Proto.varintField(2, 1)])
         let interaction = Proto.message([Proto.messageField(14, turnEnded)])

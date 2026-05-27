@@ -520,6 +520,56 @@ describe("Worker", () => {
     expect(sdkRequests.map((item) => `${item.method} ${item.path}`)).toEqual(["POST /test-local-sdk"]);
   });
 
+  it("retries schema-invalid SDK tool calls even when no local tool was required", async () => {
+    const db = new FakeD1();
+    const env = makeEnv(db);
+    const { deps, sdkRequests } = fakeDeps();
+
+    const response = await handleRequest(
+      new Request("https://composer.test/opencodev2/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer cursor_direct_key_invalid_retry",
+          "x-session-affinity": "invalid-retry-session"
+        },
+        body: JSON.stringify({
+          model: "composer-2.5",
+          messages: [{ role: "user", content: "Retry invalid mapped tool" }],
+          tools: [
+            {
+              type: "function",
+              function: {
+                name: "mcp__github__create_issue",
+                parameters: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    title: { type: "string" },
+                    body: { type: "string" }
+                  },
+                  required: ["title"]
+                }
+              }
+            }
+          ]
+        })
+      }),
+      env,
+      fakeCtx(),
+      deps
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      choices: [{ message: { content: "Partial after retry" }, finish_reason: "stop" }]
+    });
+    expect(sdkRequests.map((item) => `${item.method} ${item.path}`)).toEqual(["POST /test-local-sdk", "POST /test-local-sdk"]);
+    expect(String(sdkRequests[1].body)).toContain("Mapping failure detail");
+    expect(String(sdkRequests[1].body)).toContain("Required client arguments");
+    expect(String(sdkRequests[1].body)).toContain("title:string");
+  });
+
   it("can route OpenCode SDK runs through a standard streaming bridge", async () => {
     const db = new FakeD1();
     const env = { ...makeEnv(db), CURSOR_SDK_BRIDGE_URL: "https://bridge.test/sdk" };
@@ -1494,10 +1544,12 @@ async function decodeRequestBody(body: BodyInit | null | undefined): Promise<str
   return "";
 }
 
-function sdkRunKind(body: string): "completed" | "drop" | "hello" | "list" | "shell" | "tool-result" {
+function sdkRunKind(body: string): "completed" | "drop" | "hello" | "invalid" | "list" | "shell" | "tool-result" {
   const text = body;
   if (text.includes("Completed SDK tool result")) return "completed";
   if (text.includes("LOCAL OPENCODE TOOL RESULT:")) return "tool-result";
+  if (text.includes("Retry invalid mapped tool") && text.includes("TOOL CALL RETRY")) return "drop";
+  if (text.includes("Retry invalid mapped tool")) return "invalid";
   if (text.includes("Retry dropped stream")) return "drop";
   if (text.includes("Run shell command")) return "shell";
   if (text.includes("List files")) return "list";
@@ -1510,6 +1562,19 @@ function localSdkFakeResponse(kind: ReturnType<typeof sdkRunKind>): Response {
       start(controller) {
         if (kind === "list") {
           controller.enqueue(localSdkToolCallFrame("sdk_call_1", 4, protoMessage([protoField(2, "*")])));
+        } else if (kind === "invalid") {
+          controller.enqueue(
+            localSdkToolCallFrame(
+              "sdk_call_invalid",
+              15,
+              protoMessage([
+                protoField(1, "create_issue"),
+                protoField(2, protoValueMapEntry("body", protoStringValue("Missing required title"))),
+                protoField(4, "github"),
+                protoField(5, "create_issue")
+              ])
+            )
+          );
         } else if (kind === "drop") {
           controller.enqueue(localSdkTextFrame("Partial after retry"));
         } else if (kind === "shell") {
@@ -1613,6 +1678,14 @@ function protoMessage(parts: Uint8Array[]): Uint8Array {
 function protoField(fieldNumber: number, value: string | Uint8Array): Uint8Array {
   const data = typeof value === "string" ? new TextEncoder().encode(value) : value;
   return protoMessage([varint((fieldNumber << 3) | 2), varint(data.length), data]);
+}
+
+function protoValueMapEntry(key: string, value: Uint8Array): Uint8Array {
+  return protoMessage([protoField(1, key), protoField(2, value)]);
+}
+
+function protoStringValue(value: string): Uint8Array {
+  return protoMessage([protoField(3, value)]);
 }
 
 function protoVarintField(fieldNumber: number, value: number): Uint8Array {

@@ -20,6 +20,7 @@ import {
   responseObject,
   responseTextStartEvents,
   responseToolCallEvents,
+  toolCallRetryHint,
   toOpenAiToolCalls
 } from "./openai";
 import { submitWaitlist } from "./waitlist";
@@ -387,13 +388,16 @@ async function handleOpenCodeSdkChatRoute(
       sessionOwnerKey: sdkSessionOwner(auth),
       workingDirectory: prepared.toolContext?.workingDirectory,
       requiresLocalTool: prepared.requiresLocalTool,
-      allowToolCall: (toolCall) =>
-        toOpenAiToolCalls({
+      allowToolCall: (toolCall) => {
+        const toolCalls = toOpenAiToolCalls({
           toolCalls: [toolCall],
           tools: prepared.tools,
           responseId: "probe",
           context: prepared.toolContext
-        }).length > 0
+        });
+        return toolCalls.length > 0
+          || toolCallRetryHint({ toolCall, tools: prepared.tools, context: prepared.toolContext });
+      }
     });
 
     if (prepared.stream) {

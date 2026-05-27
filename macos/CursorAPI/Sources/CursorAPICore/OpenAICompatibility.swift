@@ -1857,6 +1857,26 @@ public enum OpenAICompatibility {
         resolveToolCall(toolCall, tools: tools, context: context) != nil
     }
 
+    static func toolCallRetryHint(_ toolCall: CursorToolCall, tools: [OpenAIToolSpec], context: ToolCallContext? = nil) -> String {
+        let normalizedToolCall = normalizeSDKToolCall(toolCall)
+        guard let tool = resolveToolSpec(normalizedToolCall.name, arguments: normalizedToolCall.arguments, tools: tools) else {
+            if tools.isEmpty {
+                return "No client tool inventory was available for SDK \(normalizedToolCall.name)."
+            }
+            return "SDK \(normalizedToolCall.name) did not match any client tool. Available client tools: \(tools.map(\.name).joined(separator: ", "))."
+        }
+        let arguments = normalizeArguments(normalizedToolCall.arguments, sdkToolName: normalizedToolCall.name, tool: tool, context: context)
+        if toolArgumentsSatisfySchema(arguments, tool: tool) {
+            return "SDK \(normalizedToolCall.name) maps to client \(tool.name); retry with complete arguments for that route."
+        }
+        return [
+            "SDK \(normalizedToolCall.name) mapped to client \(tool.name), but normalized arguments do not satisfy the client JSON schema.",
+            "Normalized arguments: \(safeJSONForPrompt(arguments.mapValues(\.foundationValue))).",
+            "Required client arguments: \(toolRequiredArgumentSummary(tool)).",
+            "Client schema properties: \(toolSchemaPropertySummary(tool))."
+        ].joined(separator: " ")
+    }
+
     private static func toOpenAIToolCalls(_ toolCalls: [CursorToolCall], tools: [OpenAIToolSpec], responseID: String, context: ToolCallContext? = nil) -> [[String: Any]] {
         toolCalls.enumerated().compactMap { index, toolCall in
             guard let resolved = resolveToolCall(toolCall, tools: tools, context: context) else {
@@ -1913,9 +1933,11 @@ public enum OpenAICompatibility {
             guard tools.isEmpty else { return nil }
             return ResolvedToolCall(name: normalizedToolCall.name, arguments: normalizedToolCall.arguments)
         }
+        let arguments = normalizeArguments(normalizedToolCall.arguments, sdkToolName: normalizedToolCall.name, tool: tool, context: context)
+        guard toolArgumentsSatisfySchema(arguments, tool: tool) else { return nil }
         return ResolvedToolCall(
             name: tool.name,
-            arguments: normalizeArguments(normalizedToolCall.arguments, sdkToolName: normalizedToolCall.name, tool: tool, context: context)
+            arguments: arguments
         )
     }
 
@@ -2994,6 +3016,136 @@ public enum OpenAICompatibility {
         return shape.properties.first(where: { normalizedName($0.key) == normalized })?.value
     }
 
+    private static func toolArgumentsSatisfySchema(_ arguments: [String: JSONValue], tool: OpenAIToolSpec) -> Bool {
+        let shape = parameterSchemaShape(tool.parameters)
+        guard !shape.propertyOrder.isEmpty else { return true }
+        for required in shape.required {
+            guard let property = propertyName(matching: [required], in: shape.propertyOrder),
+                  argumentValueSatisfiesSchema(arguments[property], schema: shape.properties[property], required: true) else {
+                return false
+            }
+        }
+        for (property, value) in arguments {
+            guard let propertyName = propertyName(matching: [property], in: shape.propertyOrder),
+                  let schema = shape.properties[propertyName] else {
+                continue
+            }
+            if !argumentValueSatisfiesSchema(value, schema: schema, required: false) {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func argumentValueSatisfiesSchema(_ value: JSONValue?, schema: JSONValue?, required: Bool) -> Bool {
+        guard let value else { return !required }
+        guard case .object(let object)? = schema else { return value != .null || !required }
+        if value == .null {
+            return schemaAllowsJSONType(object, type: "null")
+        }
+        if let const = object["const"], value != const {
+            return false
+        }
+        if case .array(let values)? = object["enum"], !values.contains(value) {
+            return false
+        }
+        let anyOf = composedParameterSchemas(object["anyOf"])
+        if !anyOf.isEmpty, !anyOf.contains(where: { argumentValueSatisfiesSchema(value, schema: $0, required: true) }) {
+            return false
+        }
+        let oneOf = composedParameterSchemas(object["oneOf"])
+        if !oneOf.isEmpty, !oneOf.contains(where: { argumentValueSatisfiesSchema(value, schema: $0, required: true) }) {
+            return false
+        }
+        let allOf = composedParameterSchemas(object["allOf"])
+        if !allOf.isEmpty, !allOf.allSatisfy({ argumentValueSatisfiesSchema(value, schema: $0, required: true) }) {
+            return false
+        }
+        let types = schemaJSONTypes(object)
+        guard !types.isEmpty else { return true }
+        return types.contains { jsonValue(value, matchesType: $0) }
+    }
+
+    private static func schemaJSONTypes(_ schema: [String: JSONValue]) -> [String] {
+        if let value = schema["type"]?.stringValue {
+            return [value]
+        }
+        if case .array(let values)? = schema["type"] {
+            return values.compactMap(\.stringValue)
+        }
+        return []
+    }
+
+    private static func schemaAllowsJSONType(_ schema: [String: JSONValue], type: String) -> Bool {
+        let types = schemaJSONTypes(schema)
+        return types.isEmpty || types.contains(type)
+    }
+
+    private static func jsonValue(_ value: JSONValue, matchesType type: String) -> Bool {
+        switch type {
+        case "string":
+            return value.stringValue != nil
+        case "number":
+            if case .number = value { return true }
+            return false
+        case "integer":
+            if case .number(let number) = value { return number.rounded() == number }
+            return false
+        case "boolean":
+            if case .bool = value { return true }
+            return false
+        case "array":
+            if case .array = value { return true }
+            return false
+        case "object":
+            if case .object = value { return true }
+            return false
+        case "null":
+            return value == .null
+        default:
+            return true
+        }
+    }
+
+    private static func toolRequiredArgumentSummary(_ tool: OpenAIToolSpec) -> String {
+        let shape = parameterSchemaShape(tool.parameters)
+        guard !shape.required.isEmpty else { return "none" }
+        return shape.required.map { property in
+            let canonicalProperty = shape.propertyOrder.first { normalizedName($0) == normalizedName(property) } ?? property
+            return "\(canonicalProperty):\(schemaTypeLabel(shape.properties[canonicalProperty]))"
+        }.joined(separator: ", ")
+    }
+
+    private static func toolSchemaPropertySummary(_ tool: OpenAIToolSpec) -> String {
+        let shape = parameterSchemaShape(tool.parameters)
+        guard !shape.propertyOrder.isEmpty else { return "none" }
+        return shape.propertyOrder.map { property in
+            "\(property):\(schemaTypeLabel(shape.properties[property]))"
+        }.joined(separator: ", ")
+    }
+
+    private static func schemaTypeLabel(_ schema: JSONValue?) -> String {
+        guard case .object(let object)? = schema else { return "unknown" }
+        let enumValues: [String]
+        if case .array(let values)? = object["enum"] {
+            enumValues = values.compactMap(\.stringValue)
+        } else {
+            enumValues = []
+        }
+        if !enumValues.isEmpty {
+            return "enum(\(enumValues.joined(separator: "|")))"
+        }
+        let suffix = object["const"]?.stringValue.map { "=\($0)" } ?? ""
+        let types = schemaJSONTypes(object)
+        return "\(types.isEmpty ? "any" : types.joined(separator: "|"))\(suffix)"
+    }
+
+    private static func safeJSONForPrompt(_ value: Any) -> String {
+        let json = jsonString(value)
+        guard json.count > 700 else { return json }
+        return "\(json.prefix(700))..."
+    }
+
     private struct ParameterSchemaShape {
         var properties: [String: JSONValue]
         var propertyOrder: [String]
@@ -3203,6 +3355,9 @@ public enum OpenAICompatibility {
         let enumValues = unionStringEnumValues(leftObject["enum"], rightObject["enum"], leftObject["const"], rightObject["const"])
         if !enumValues.isEmpty {
             merged["enum"] = .array(enumValues.map(JSONValue.string))
+            if enumValues.count > 1 {
+                merged["const"] = nil
+            }
         }
         if merged["description"] == nil, let description = rightObject["description"] {
             merged["description"] = description

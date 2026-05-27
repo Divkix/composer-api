@@ -86,7 +86,7 @@ export const cursorTestExports = {
 export type CursorTextEvent =
   | { type: "text"; text: string }
   | { type: "tool_call"; toolCall: CursorToolCall }
-  | { type: "rejected_tool_call"; toolCall: CursorToolCall }
+  | { type: "rejected_tool_call"; toolCall: CursorToolCall; reason?: string }
   | { type: "done"; finalText: string; toolCalls: CursorToolCall[] };
 
 export async function* streamCursorText(response: Response): AsyncGenerator<CursorTextEvent> {

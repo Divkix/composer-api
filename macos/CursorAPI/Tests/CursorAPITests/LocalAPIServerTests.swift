@@ -2826,6 +2826,46 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertNil(arguments["path"])
     }
 
+    func testChatToolCallsDoNotEmitSchemaInvalidFileToolCalls() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[{"role":"user","content":"write a file"}],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"write",
+                "parameters":{
+                  "type":"object",
+                  "additionalProperties":false,
+                  "properties":{
+                    "filePath":{"type":"string"},
+                    "content":{"type":"string"}
+                  },
+                  "required":["filePath","content"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+        let toolCall = CursorToolCall(name: "write", arguments: [
+            "path": .string("src/App.tsx")
+        ])
+
+        let object = OpenAICompatibility.chatCompletionResponse(
+            id: "chatcmpl_test",
+            created: 1,
+            prepared: prepared,
+            output: CursorSDKOutput(text: "", toolCalls: [toolCall], agentID: "agent-test", runID: "run-test")
+        )
+
+        let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
+        let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        XCTAssertEqual((message["tool_calls"] as? [[String: Any]])?.count, 0)
+    }
+
     func testChatToolCallsMapDirectoryOnlySDKGlobForOpenCode() throws {
         let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
         {
@@ -5123,6 +5163,50 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual(wrapperArguments["serverName"] as? String, "filesystem")
         XCTAssertEqual(wrapperArguments["toolName"] as? String, "read_file")
         XCTAssertEqual(input["path"] as? String, "README.md")
+    }
+
+    func testChatToolCallsDoNotEmitSchemaInvalidSpecificMCPToolCalls() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[{"role":"user","content":"use mcp"}],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"mcp__github__create_issue",
+                "parameters":{
+                  "type":"object",
+                  "additionalProperties":false,
+                  "properties":{
+                    "title":{"type":"string"},
+                    "body":{"type":"string"}
+                  },
+                  "required":["title"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+        let toolCall = CursorToolCall(name: "mcp", arguments: [
+            "providerIdentifier": .string("github"),
+            "toolName": .string("create_issue"),
+            "args": .object([
+                "body": .string("Missing required title")
+            ])
+        ])
+
+        let object = OpenAICompatibility.chatCompletionResponse(
+            id: "chatcmpl_test",
+            created: 1,
+            prepared: prepared,
+            output: CursorSDKOutput(text: "", toolCalls: [toolCall], agentID: "agent-test", runID: "run-test")
+        )
+
+        let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
+        let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        XCTAssertEqual((message["tool_calls"] as? [[String: Any]])?.count, 0)
     }
 
     func testChatToolCallsMapSDKMCPArgsToWrapperTool() throws {

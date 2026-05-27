@@ -6,6 +6,7 @@ import {
   chatCompletionResponse,
   chatUsageChunk,
   responseObject,
+  toolCallRetryHint,
   toOpenAiToolCalls
 } from "./openai";
 
@@ -3024,6 +3025,56 @@ describe("OpenAI compatibility adapter", () => {
     expect(JSON.parse(toolCalls[0].function.arguments)).toEqual({ pattern: "**/*" });
   });
 
+  it("does not emit schema-invalid file tool calls", () => {
+    const toolCalls = toOpenAiToolCalls({
+      responseId: "chatcmpl_test",
+      tools: [
+        {
+          name: "write",
+          parameters: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              filePath: { type: "string" },
+              content: { type: "string" }
+            },
+            required: ["filePath", "content"]
+          }
+        }
+      ],
+      toolCalls: [{ name: "write", arguments: { path: "src/App.tsx" } }]
+    });
+
+    expect(toolCalls).toEqual([]);
+  });
+
+  it("explains schema-invalid file tool call retries with required client arguments", () => {
+    const tools = [
+      {
+        name: "write",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            filePath: { type: "string" },
+            content: { type: "string" }
+          },
+          required: ["filePath", "content"]
+        }
+      }
+    ];
+
+    const hint = toolCallRetryHint({
+      tools,
+      toolCall: { name: "write", arguments: { path: "src/App.tsx" } }
+    });
+
+    expect(hint).toContain("SDK write mapped to client write");
+    expect(hint).toContain("Normalized arguments");
+    expect(hint).toContain("filePath");
+    expect(hint).toContain("content:string");
+  });
+
   it("maps SDK directory-only glob calls to a valid OpenCode glob", () => {
     const toolCalls = toOpenAiToolCalls({
       responseId: "chatcmpl_test",
@@ -3133,6 +3184,38 @@ describe("OpenAI compatibility adapter", () => {
         }
       ],
       toolCalls: [{ name: "glob", arguments: { globPattern: "**/*.tsx" } }]
+    });
+
+    expect(toolCalls).toEqual([]);
+  });
+
+  it("does not emit schema-invalid specific MCP tool calls", () => {
+    const toolCalls = toOpenAiToolCalls({
+      responseId: "chatcmpl_test",
+      tools: [
+        {
+          name: "mcp__github__create_issue",
+          parameters: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              title: { type: "string" },
+              body: { type: "string" }
+            },
+            required: ["title"]
+          }
+        }
+      ],
+      toolCalls: [
+        {
+          name: "mcp",
+          arguments: {
+            providerIdentifier: "github",
+            toolName: "create_issue",
+            args: { body: "Missing required title" }
+          }
+        }
+      ]
     });
 
     expect(toolCalls).toEqual([]);

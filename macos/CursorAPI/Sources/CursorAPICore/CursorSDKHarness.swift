@@ -111,7 +111,8 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
         settings: CursorAPISettings,
         onEvent: @escaping @Sendable (CursorSDKStreamEvent) -> Void
     ) async throws -> CursorSDKOutput {
-        guard shouldRetryMissingLocalTool(prepared) else {
+        let shouldRetryMissing = shouldRetryMissingLocalTool(prepared)
+        guard shouldRetryMissing || !prepared.tools.isEmpty else {
             return try await runSDKRequest(
                 agentID: agentID,
                 runID: runID,
@@ -133,6 +134,12 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
         )
         let unsupportedToolCall = first.toolCalls.first { !OpenAICompatibility.canMapToolCall($0, tools: prepared.tools, context: prepared.toolContext) }
         if !first.toolCalls.isEmpty, unsupportedToolCall == nil {
+            for event in buffered.events() {
+                onEvent(event)
+            }
+            return first
+        }
+        guard unsupportedToolCall != nil || shouldRetryMissing else {
             for event in buffered.events() {
                 onEvent(event)
             }
@@ -174,6 +181,7 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
             "",
             "TOOL CALL RETRY:",
             "Your previous SDK response requested \(toolCall.name), but that tool could not be mapped to the allowed client tool inventory above.",
+            "Mapping failure detail: \(OpenAICompatibility.toolCallRetryHint(toolCall, tools: prepared.tools, context: prepared.toolContext))",
             "Do not answer in prose. Emit exactly one SDK tool call that maps to an allowed client tool.",
             "For filesystem mutations, prefer SDK write with path and fileText or SDK shell with command when those capabilities are present.",
             "For OpenCode MCP/server tools exposed as provider_tool names, use SDK mcp with providerIdentifier, toolName, and args."

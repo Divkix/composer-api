@@ -664,6 +664,7 @@ export function toOpenAiToolCalls(input: {
     const name = tool?.name ?? normalizedToolCall.name;
     const sdkCanonical = canonicalToolName(normalizedToolCall.name);
     const toolArguments = normalizeToolArguments(normalizedToolCall.arguments ?? {}, tool, normalizedToolCall.name, 0, input.context);
+    if (tool && !toolArgumentsSatisfySchema(toolArguments, tool)) return [];
     const id = `call_${input.responseId.replace(/[^A-Za-z0-9]/g, "").slice(-18)}_${sdkCanonical}_${index}`;
     rememberSdkToolCall(id, normalizedToolCall.name, normalizedToolCall.arguments ?? {});
     return [{
@@ -675,6 +676,31 @@ export function toOpenAiToolCalls(input: {
       }
     }];
   });
+}
+
+export function toolCallRetryHint(input: {
+  toolCall: CursorToolCall;
+  tools?: OpenAiToolSpec[];
+  context?: ToolCallContext;
+}): string {
+  const tools = input.tools ?? [];
+  const normalizedToolCall = normalizeSdkToolCall(input.toolCall);
+  const args = normalizedToolCall.arguments ?? {};
+  const tool = resolveToolSpec(normalizedToolCall.name, args, tools);
+  if (!tool) {
+    if (!tools.length) return `No client tool inventory was available for SDK ${normalizedToolCall.name}.`;
+    return `SDK ${normalizedToolCall.name} did not match any client tool. Available client tools: ${tools.map((item) => item.name).join(", ")}.`;
+  }
+  const toolArguments = normalizeToolArguments(args, tool, normalizedToolCall.name, 0, input.context);
+  if (toolArgumentsSatisfySchema(toolArguments, tool)) {
+    return `SDK ${normalizedToolCall.name} maps to client ${tool.name}; retry with complete arguments for that route.`;
+  }
+  return [
+    `SDK ${normalizedToolCall.name} mapped to client ${tool.name}, but normalized arguments do not satisfy the client JSON schema.`,
+    `Normalized arguments: ${safeJsonForPrompt(toolArguments)}.`,
+    `Required client arguments: ${toolRequiredArgumentSummary(tool)}.`,
+    `Client schema properties: ${toolSchemaPropertySummary(tool)}.`
+  ].join(" ");
 }
 
 function rememberSdkToolCall(id: string, name: string, args: Record<string, unknown>) {
@@ -2576,6 +2602,106 @@ function toolPropertySchema(tool: OpenAiToolSpec | undefined, property: string):
   return toolParameterSchema(tool).propertySchemas[property];
 }
 
+function toolArgumentsSatisfySchema(args: Record<string, unknown>, tool: OpenAiToolSpec): boolean {
+  const schema = toolParameterSchema(tool);
+  if (!schema.properties.length) return true;
+  const normalizedProperties = new Map(schema.properties.map((property) => [normalizeToolName(property), property]));
+  for (const required of schema.required) {
+    const property = firstMatchingProperty([required], schema.properties, normalizedProperties) ?? required;
+    if (!argumentValueSatisfiesSchema(args[property], schema.propertySchemas[property], true)) return false;
+  }
+  for (const [property, value] of Object.entries(args)) {
+    const propertyName = firstMatchingProperty([property], schema.properties, normalizedProperties);
+    if (!propertyName) continue;
+    if (!argumentValueSatisfiesSchema(value, schema.propertySchemas[propertyName], false)) return false;
+  }
+  return true;
+}
+
+function argumentValueSatisfiesSchema(value: unknown, schema: unknown, required: boolean): boolean {
+  if (value === undefined) return !required;
+  const record = isRecord(schema) ? schema : undefined;
+  if (value === null) return Boolean(record && schemaAllowsJsonType(record, "null"));
+  if (!record) return true;
+  const constValue = record.const;
+  if (constValue !== undefined && value !== constValue) return false;
+  if (Array.isArray(record.enum) && !record.enum.some((item) => item === value)) return false;
+  const anyOf = composedToolSchemas(record.anyOf);
+  if (anyOf.length && !anyOf.some((item) => argumentValueSatisfiesSchema(value, item, true))) return false;
+  const oneOf = composedToolSchemas(record.oneOf);
+  if (oneOf.length && !oneOf.some((item) => argumentValueSatisfiesSchema(value, item, true))) return false;
+  const allOf = composedToolSchemas(record.allOf);
+  if (allOf.length && !allOf.every((item) => argumentValueSatisfiesSchema(value, item, true))) return false;
+  const types = schemaJsonTypes(record);
+  if (!types.length) return true;
+  return types.some((type) => jsonValueMatchesType(value, type));
+}
+
+function schemaJsonTypes(schema: Record<string, unknown>): string[] {
+  if (typeof schema.type === "string") return [schema.type];
+  return Array.isArray(schema.type) ? schema.type.filter((item): item is string => typeof item === "string") : [];
+}
+
+function schemaAllowsJsonType(schema: Record<string, unknown>, type: string): boolean {
+  const types = schemaJsonTypes(schema);
+  return !types.length || types.includes(type);
+}
+
+function jsonValueMatchesType(value: unknown, type: string): boolean {
+  switch (type) {
+    case "string":
+      return typeof value === "string";
+    case "number":
+      return typeof value === "number" && Number.isFinite(value);
+    case "integer":
+      return typeof value === "number" && Number.isInteger(value);
+    case "boolean":
+      return typeof value === "boolean";
+    case "array":
+      return Array.isArray(value);
+    case "object":
+      return isRecord(value) && !Array.isArray(value);
+    case "null":
+      return value === null;
+    default:
+      return true;
+  }
+}
+
+function toolRequiredArgumentSummary(tool: OpenAiToolSpec): string {
+  const schema = toolParameterSchema(tool);
+  if (!schema.required.length) return "none";
+  return schema.required.map((property) => {
+    const canonicalProperty = schema.properties.find((item) => normalizeToolName(item) === normalizeToolName(property)) ?? property;
+    return `${canonicalProperty}:${schemaTypeLabel(schema.propertySchemas[canonicalProperty])}`;
+  }).join(", ");
+}
+
+function toolSchemaPropertySummary(tool: OpenAiToolSpec): string {
+  const schema = toolParameterSchema(tool);
+  if (!schema.properties.length) return "none";
+  return schema.properties.map((property) => `${property}:${schemaTypeLabel(schema.propertySchemas[property])}`).join(", ");
+}
+
+function schemaTypeLabel(schema: unknown): string {
+  if (!isRecord(schema)) return "unknown";
+  const constValue = typeof schema.const === "string" ? `=${schema.const}` : "";
+  const enumValues = Array.isArray(schema.enum) ? schema.enum.filter((item): item is string => typeof item === "string") : [];
+  if (enumValues.length) return `enum(${enumValues.join("|")})`;
+  const types = schemaJsonTypes(schema);
+  return `${types.join("|") || "any"}${constValue}`;
+}
+
+function safeJsonForPrompt(value: unknown): string {
+  try {
+    const json = JSON.stringify(value);
+    if (!json) return "null";
+    return json.length > 700 ? `${json.slice(0, 700)}...` : json;
+  } catch {
+    return "[unserializable]";
+  }
+}
+
 function normalizeToolArgumentValue(
   value: unknown,
   targetProperty: string,
@@ -2992,7 +3118,10 @@ function mergePropertySchemas(left: unknown, right: unknown): unknown {
     left.const === undefined ? undefined : [left.const],
     right.const === undefined ? undefined : [right.const]
   );
-  if (enumValues.length) merged.enum = enumValues;
+  if (enumValues.length) {
+    merged.enum = enumValues;
+    if (enumValues.length > 1) delete merged.const;
+  }
   if (merged.description === undefined && typeof right.description === "string") merged.description = right.description;
   return merged;
 }

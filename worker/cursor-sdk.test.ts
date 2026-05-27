@@ -113,11 +113,12 @@ describe("Cursor SDK harness", () => {
     const prompt = cursorSdkTestExports.retryPromptAfterUnsupportedTool("Original prompt", {
       name: "shell",
       arguments: { command: "pwd" }
-    });
+    }, "Required client arguments: command:string, description:string.");
 
     expect(prompt).toContain("Original prompt");
     expect(prompt).toContain("shell");
     expect(prompt).toContain("could not be mapped");
+    expect(prompt).toContain("Required client arguments");
     expect(prompt).toContain("allowed OpenCode tool inventory");
   });
 });
