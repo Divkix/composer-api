@@ -188,15 +188,16 @@ public enum CursorSDKProto {
         return Proto.message([Proto.messageField(1, runRequest)])
     }
 
-    public static func requestContextResult(id: Int, execID: String?) -> Data {
+    public static func requestContextResult(id: Int, execID: String?, workingDirectory: String? = nil) -> Data {
+        let cwd = sdkWorkingDirectory(workingDirectory)
         let env = Proto.message([
             Proto.stringField(1, "SDK OpenCode bridge"),
-            Proto.stringField(2, "."),
+            Proto.stringField(2, cwd),
             Proto.stringField(3, "sh"),
             Proto.boolField(5, false),
             Proto.stringField(10, "UTC"),
-            Proto.stringField(11, "."),
-            Proto.stringField(21, ".")
+            Proto.stringField(11, cwd),
+            Proto.stringField(21, cwd)
         ])
         let requestContext = Proto.message([
             Proto.messageField(4, env),
@@ -222,6 +223,14 @@ public enum CursorSDKProto {
             Proto.messageField(10, result)
         ])
         return Proto.message([Proto.messageField(2, execClientMessage)])
+    }
+
+    private static func sdkWorkingDirectory(_ value: String?) -> String {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmed.isEmpty || trimmed.lowercased() == "undefined" || trimmed.lowercased() == "null" {
+            return "."
+        }
+        return trimmed
     }
 
     public static func stableID(_ data: Data) -> String {

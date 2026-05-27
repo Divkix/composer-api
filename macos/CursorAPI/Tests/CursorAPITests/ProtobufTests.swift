@@ -32,6 +32,20 @@ final class ProtobufTests: XCTestCase {
         XCTAssertEqual(CursorSDKRequestContext.decode(serverLikeFrame), CursorSDKRequestContext(id: 42, execID: "exec-1"))
     }
 
+    func testRequestContextUsesHarnessWorkingDirectory() throws {
+        let context = CursorSDKProto.requestContextResult(id: 42, execID: "exec-1", workingDirectory: "/tmp/project")
+        let execMessage = try XCTUnwrap(Proto.dataField(Proto.decodeFields(context), 2))
+        let result = try XCTUnwrap(Proto.dataField(Proto.decodeFields(execMessage), 10))
+        let success = try XCTUnwrap(Proto.dataField(Proto.decodeFields(result), 1))
+        let requestContext = try XCTUnwrap(Proto.dataField(Proto.decodeFields(success), 1))
+        let env = try XCTUnwrap(Proto.dataField(Proto.decodeFields(requestContext), 4))
+        let envFields = Proto.decodeFields(env)
+
+        XCTAssertEqual(Proto.stringField(envFields, 2), "/tmp/project")
+        XCTAssertEqual(Proto.stringField(envFields, 11), "/tmp/project")
+        XCTAssertEqual(Proto.stringField(envFields, 21), "/tmp/project")
+    }
+
     func testLocalHarnessUsesSDKRunIDPrefix() {
         let runID = LocalCursorSDKHarness.newRunID()
         XCTAssertTrue(runID.hasPrefix("run-"))

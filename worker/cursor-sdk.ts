@@ -87,6 +87,7 @@ export async function createCursorSdkCompletion(
     model?: { id: string };
     sessionKey?: string;
     sessionOwnerKey?: string;
+    workingDirectory?: string;
     requiresLocalTool?: boolean;
     allowToolCall?: (toolCall: CursorToolCall) => boolean;
   }
@@ -111,6 +112,7 @@ export async function createCursorSdkCompletion(
       runId,
       prompt: sdkPrompt(input.prompt),
       modelId: input.model?.id || "composer-2.5",
+      workingDirectory: input.workingDirectory,
       requiresLocalTool: input.requiresLocalTool === true,
       allowToolCall: input.allowToolCall
     })
@@ -137,6 +139,7 @@ export function resetCursorSdkSessionCacheForTest() {
 
 export const cursorSdkTestExports = {
   decodeLocalAgentServerFrame,
+  encodeAgentClientRequestContextResult,
   encodeAgentClientRunRequest,
   isEmittableSdkToolCall,
   normalizeSdkToolCallForOpenCode,
@@ -148,7 +151,14 @@ async function* streamCursorLocalSdkRun(
   env: Env,
   deps: Deps,
   accessToken: string,
-  input: { agentId: string; runId: string; prompt: string; modelId: string; allowToolCall?: (toolCall: CursorToolCall) => boolean }
+  input: {
+    agentId: string;
+    runId: string;
+    prompt: string;
+    modelId: string;
+    workingDirectory?: string;
+    allowToolCall?: (toolCall: CursorToolCall) => boolean;
+  }
 ): AsyncGenerator<CursorTextEvent> {
   let text = "";
   const toolCalls: CursorToolCall[] = [];
@@ -170,9 +180,9 @@ async function* streamCursorLocalSdkRun(
   const uploadWriter = upload?.writable.getWriter();
   const runResponsePromise = (
     bridgeBinding
-      ? cursorLocalSdkContainerBridgeRaw(env, bridgeBinding, accessToken, requestId, requestBody, runAbort.signal)
+      ? cursorLocalSdkContainerBridgeRaw(env, bridgeBinding, accessToken, requestId, requestBody, input.workingDirectory, runAbort.signal)
       : bridgeUrl
-        ? cursorLocalSdkUrlBridgeRaw(env, deps, bridgeUrl, accessToken, requestId, requestBody, runAbort.signal)
+        ? cursorLocalSdkUrlBridgeRaw(env, deps, bridgeUrl, accessToken, requestId, requestBody, input.workingDirectory, runAbort.signal)
         : cursorLocalSdkRaw(env, deps, cursorLocalSdkEndpoint(env), accessToken, requestId, upload!.readable, runAbort.signal)
   ).then((response) => ({
     source: "run" as const,
@@ -211,7 +221,7 @@ async function* streamCursorLocalSdkRun(
           }
         } else if (event.type === "request_context") {
           if (uploadOpen && uploadWriter) {
-            await writeSdkUpload(uploadWriter, encodeConnectFrame(encodeAgentClientRequestContextResult(event)));
+            await writeSdkUpload(uploadWriter, encodeConnectFrame(encodeAgentClientRequestContextResult(event, { workingDirectory: input.workingDirectory })));
           }
         } else if (event.type === "done") {
           yield { type: "done", finalText: text, toolCalls };
@@ -236,6 +246,7 @@ async function* streamCursorLocalSdkRunWithRetry(
     runId: string;
     prompt: string;
     modelId: string;
+    workingDirectory?: string;
     requiresLocalTool: boolean;
     allowToolCall?: (toolCall: CursorToolCall) => boolean;
   }
@@ -333,13 +344,14 @@ async function cursorLocalSdkUrlBridgeRaw(
   accessToken: string,
   requestId: string,
   runFrame: Uint8Array,
+  workingDirectory?: string,
   signal?: AbortSignal
 ): Promise<Response> {
   const response = await deps.fetch(bridgeUrl, {
     method: "POST",
     headers: cursorLocalSdkBridgeHeaders(env),
     signal,
-    body: JSON.stringify(cursorLocalSdkBridgePayload(env, accessToken, requestId, runFrame))
+    body: JSON.stringify(cursorLocalSdkBridgePayload(env, accessToken, requestId, runFrame, workingDirectory))
   });
   return assertCursorLocalSdkBridgeResponse(response);
 }
@@ -350,6 +362,7 @@ async function cursorLocalSdkContainerBridgeRaw(
   accessToken: string,
   requestId: string,
   runFrame: Uint8Array,
+  workingDirectory?: string,
   signal?: AbortSignal
 ): Promise<Response> {
   const bridgeId = bridgeBinding.idFromName("shared");
@@ -358,7 +371,7 @@ async function cursorLocalSdkContainerBridgeRaw(
     method: "POST",
     headers: cursorLocalSdkBridgeHeaders(env),
     signal,
-    body: JSON.stringify(cursorLocalSdkBridgePayload(env, accessToken, requestId, runFrame))
+    body: JSON.stringify(cursorLocalSdkBridgePayload(env, accessToken, requestId, runFrame, workingDirectory))
   });
   return assertCursorLocalSdkBridgeResponse(response);
 }
@@ -373,16 +386,24 @@ function cursorLocalSdkBridgeHeaders(env: Env): Headers {
   return headers;
 }
 
-function cursorLocalSdkBridgePayload(env: Env, accessToken: string, requestId: string, runFrame: Uint8Array): Record<string, string> {
+function cursorLocalSdkBridgePayload(
+  env: Env,
+  accessToken: string,
+  requestId: string,
+  runFrame: Uint8Array,
+  workingDirectory?: string
+): Record<string, string> {
   const backendBaseUrl = env.CURSOR_BACKEND_BASE_URL?.trim();
   if (!backendBaseUrl) throw new HttpError("Cursor backend URL is not configured", 500, "cursor_missing_backend_url");
+  const sdkCwd = sdkWorkingDirectory(workingDirectory);
   return {
     accessToken,
     requestId,
     backendBaseUrl,
     localAgentEndpoint: cursorLocalSdkEndpoint(env),
     clientVersion: env.CURSOR_SDK_CLIENT_VERSION || DEFAULT_SDK_CLIENT_VERSION,
-    runFrame: bytesToBase64(runFrame)
+    runFrame: bytesToBase64(runFrame),
+    ...(sdkCwd !== "." ? { workingDirectory: sdkCwd } : {})
   };
 }
 
@@ -459,15 +480,16 @@ function encodeAgentClientRunRequest(input: { agentId: string; messageId: string
   return protoMessage([protoMessageField(1, runRequest)]);
 }
 
-function encodeAgentClientRequestContextResult(input: { id: number; execId?: string }): Uint8Array {
+function encodeAgentClientRequestContextResult(input: { id: number; execId?: string }, options: { workingDirectory?: string } = {}): Uint8Array {
+  const workingDirectory = sdkWorkingDirectory(options.workingDirectory);
   const env = protoMessage([
     protoStringField(1, "Cloudflare Worker"),
-    protoStringField(2, "."),
+    protoStringField(2, workingDirectory),
     protoStringField(3, "sh"),
     protoVarintField(5, false),
     protoStringField(10, "UTC"),
-    protoStringField(11, "."),
-    protoStringField(21, ".")
+    protoStringField(11, workingDirectory),
+    protoStringField(21, workingDirectory)
   ]);
   const requestContext = protoMessage([
     protoMessageField(4, env),
@@ -493,6 +515,12 @@ function encodeAgentClientRequestContextResult(input: { id: number; execId?: str
     protoMessageField(10, result)
   ]);
   return protoMessage([protoMessageField(2, execClientMessage)]);
+}
+
+function sdkWorkingDirectory(value: string | undefined): string {
+  const trimmed = value?.trim();
+  if (!trimmed || trimmed.toLowerCase() === "undefined" || trimmed.toLowerCase() === "null") return ".";
+  return trimmed;
 }
 
 function decodeLocalAgentServerFrame(payload: Uint8Array): LocalSdkDecodedEvent[] {

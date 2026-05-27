@@ -19,6 +19,7 @@ const bridgeToken = process.env.CURSOR_SDK_BRIDGE_TOKEN || "";
 const defaultBackendBaseUrl = process.env.CURSOR_BACKEND_BASE_URL || "";
 const defaultLocalAgentEndpoint = process.env.CURSOR_LOCAL_AGENT_ENDPOINT || "";
 const defaultClientVersion = process.env.CURSOR_SDK_CLIENT_VERSION || "sdk-1.0.13";
+const defaultWorkingDirectory = process.env.CURSOR_SDK_WORKING_DIRECTORY || "";
 const maxJsonBytes = parseInteger(process.env.CURSOR_SDK_BRIDGE_MAX_JSON_BYTES, 1024 * 1024);
 const requestTimeoutMs = parseInteger(process.env.CURSOR_SDK_BRIDGE_REQUEST_TIMEOUT_MS, 120_000);
 const http2SessionIdleMs = parseInteger(process.env.CURSOR_SDK_BRIDGE_HTTP2_IDLE_MS, 5 * 60 * 1000);
@@ -66,6 +67,7 @@ async function handleRequest(request, response) {
   const localAgentEndpoint =
     typeof body.localAgentEndpoint === "string" && body.localAgentEndpoint ? body.localAgentEndpoint : defaultLocalAgentEndpoint;
   const clientVersion = typeof body.clientVersion === "string" && body.clientVersion ? body.clientVersion : defaultClientVersion;
+  const workingDirectory = typeof body.workingDirectory === "string" && body.workingDirectory ? body.workingDirectory : defaultWorkingDirectory;
   const runFrame = typeof body.runFrame === "string" ? Buffer.from(body.runFrame, "base64") : null;
 
   if (!accessToken) throw new HttpError("Missing access token", 400, "invalid_request");
@@ -79,6 +81,7 @@ async function handleRequest(request, response) {
     backendBaseUrl,
     localAgentEndpoint,
     clientVersion,
+    workingDirectory,
     runFrame
   });
 }
@@ -143,7 +146,7 @@ async function proxySdkRun(response, input) {
           const requestContext = !contextSent ? decodeRequestContextEvent(frame.payload) : null;
           if (requestContext) {
             contextSent = true;
-            request.write(connectFrame(encodeAgentClientRequestContextResult(requestContext)));
+            request.write(connectFrame(encodeAgentClientRequestContextResult(requestContext, input.workingDirectory)));
             request.end();
             continue;
           }
@@ -294,15 +297,16 @@ function decodeToolCallEvent(payload) {
   return false;
 }
 
-function encodeAgentClientRequestContextResult(input) {
+function encodeAgentClientRequestContextResult(input, workingDirectoryValue = "") {
+  const workingDirectory = sdkWorkingDirectory(workingDirectoryValue);
   const env = protoMessage([
     protoStringField(1, "SDK OpenCode bridge"),
-    protoStringField(2, "."),
+    protoStringField(2, workingDirectory),
     protoStringField(3, "sh"),
     protoVarintField(5, false),
     protoStringField(10, "UTC"),
-    protoStringField(11, "."),
-    protoStringField(21, ".")
+    protoStringField(11, workingDirectory),
+    protoStringField(21, workingDirectory)
   ]);
   const requestContext = protoMessage([
     protoMessageField(4, env),
@@ -324,6 +328,12 @@ function encodeAgentClientRequestContextResult(input) {
   const result = protoMessage([protoMessageField(1, success)]);
   const execClientMessage = protoMessage([protoVarintField(1, input.id), protoStringField(15, input.execId), protoMessageField(10, result)]);
   return protoMessage([protoMessageField(2, execClientMessage)]);
+}
+
+function sdkWorkingDirectory(value) {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!trimmed || trimmed.toLowerCase() === "undefined" || trimmed.toLowerCase() === "null") return ".";
+  return trimmed;
 }
 
 function connectFrame(payload, flags = 0) {

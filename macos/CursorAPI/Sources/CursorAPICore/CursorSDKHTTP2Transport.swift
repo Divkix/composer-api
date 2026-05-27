@@ -17,16 +17,19 @@ public final class CursorSDKHTTP2Transport: NSObject, URLSessionDataDelegate, UR
         var networkProtocolName: String?
         var frameHandler: (@Sendable (Data) -> Void)?
         var completed = false
+        let workingDirectory: String?
 
         init(
             continuation: CheckedContinuation<Data, any Error>,
             inputStream: InputStream,
             outputStream: OutputStream,
+            workingDirectory: String?,
             frameHandler: @escaping @Sendable (Data) -> Void
         ) {
             self.continuation = continuation
             self.inputStream = inputStream
             self.outputStream = outputStream
+            self.workingDirectory = workingDirectory
             self.frameHandler = frameHandler
         }
 
@@ -94,6 +97,7 @@ public final class CursorSDKHTTP2Transport: NSObject, URLSessionDataDelegate, UR
     public func runStreaming(
         request originalRequest: URLRequest,
         initialFrame: Data,
+        workingDirectory: String? = nil,
         onFrame: @escaping @Sendable (Data) -> Void
     ) async throws -> Data {
         try await withCheckedThrowingContinuation { continuation in
@@ -114,6 +118,7 @@ public final class CursorSDKHTTP2Transport: NSObject, URLSessionDataDelegate, UR
                 continuation: continuation,
                 inputStream: readStream,
                 outputStream: writeStream,
+                workingDirectory: workingDirectory,
                 frameHandler: onFrame
             )
             state.task = task
@@ -167,7 +172,7 @@ public final class CursorSDKHTTP2Transport: NSObject, URLSessionDataDelegate, UR
                 return action
             }
             if let context = action.requestContext {
-                let frame = ConnectProto.frame(CursorSDKProto.requestContextResult(id: context.id, execID: context.execID))
+                let frame = ConnectProto.frame(CursorSDKProto.requestContextResult(id: context.id, execID: context.execID, workingDirectory: state.workingDirectory))
                 do {
                     try state.write(frame)
                     state.closeUpload()

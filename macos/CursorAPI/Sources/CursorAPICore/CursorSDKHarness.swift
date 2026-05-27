@@ -205,7 +205,8 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
             framedBody: framed,
             accessToken: accessToken,
             requestID: requestID,
-            settings: settings
+            settings: settings,
+            workingDirectory: prepared.toolContext?.workingDirectory
         ) { payload in
             let events = decoder.push(payload)
             for event in events {
@@ -252,6 +253,7 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
         accessToken: String,
         requestID: String,
         settings: CursorAPISettings,
+        workingDirectory: String?,
         onFrame: @escaping @Sendable (Data) -> Void
     ) async throws -> Data {
         let endpoint = try endpointURL(settings: settings)
@@ -270,7 +272,7 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
         request.setValue(requestID, forHTTPHeaderField: "x-request-id")
 
         if ProcessInfo.processInfo.environment["CURSOR_API_USE_SWIFT_HTTP2_TRANSPORT"] == "1" {
-            return try await CursorSDKHTTP2Transport.shared.runStreaming(request: request, initialFrame: framedBody, onFrame: onFrame)
+            return try await CursorSDKHTTP2Transport.shared.runStreaming(request: request, initialFrame: framedBody, workingDirectory: workingDirectory, onFrame: onFrame)
         } else {
             let bridge = try await CursorSDKBridgeServer.shared.endpoint(settings: settings)
             return try await runBridgeSDKRequest(
@@ -279,6 +281,7 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
                 accessToken: accessToken,
                 requestID: requestID,
                 settings: settings,
+                workingDirectory: workingDirectory,
                 onFrame: onFrame
             )
         }
@@ -290,6 +293,7 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
         accessToken: String,
         requestID: String,
         settings: CursorAPISettings,
+        workingDirectory: String?,
         onFrame: @escaping @Sendable (Data) -> Void
     ) async throws -> Data {
         var request = URLRequest(url: bridge.url)
@@ -303,7 +307,8 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
             "backendBaseUrl": settings.backendBaseURL,
             "localAgentEndpoint": settings.localAgentEndpoint,
             "clientVersion": settings.clientVersion.isEmpty ? "sdk-1.0.13" : settings.clientVersion,
-            "runFrame": framedBody.base64EncodedString()
+            "runFrame": framedBody.base64EncodedString(),
+            "workingDirectory": workingDirectory ?? ""
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.withoutEscapingSlashes])
         let (data, response) = try await URLSession.shared.data(for: request)

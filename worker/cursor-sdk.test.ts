@@ -63,6 +63,23 @@ describe("Cursor SDK harness", () => {
     });
   });
 
+  it("encodes the harness working directory in SDK request context results", () => {
+    const context = cursorSdkTestExports.encodeAgentClientRequestContextResult(
+      { id: 42, execId: "exec-1" },
+      { workingDirectory: "/tmp/project" }
+    );
+    const execMessage = dataField(decodeFields(context), 2);
+    const result = dataField(decodeFields(execMessage), 10);
+    const success = dataField(decodeFields(result), 1);
+    const requestContext = dataField(decodeFields(success), 1);
+    const env = dataField(decodeFields(requestContext), 4);
+    const envFields = decodeFields(env);
+
+    expect(stringField(envFields, 2)).toBe("/tmp/project");
+    expect(stringField(envFields, 11)).toBe("/tmp/project");
+    expect(stringField(envFields, 21)).toBe("/tmp/project");
+  });
+
   it("builds a hard retry prompt when a tool-required SDK turn returns prose", () => {
     const prompt = cursorSdkTestExports.retryPromptAfterMissingTool("Original prompt");
 
@@ -125,4 +142,57 @@ function protoVarint(value: number): Uint8Array {
   }
   bytes.push(current);
   return Uint8Array.from(bytes);
+}
+
+interface ProtoField {
+  no: number;
+  value: number | Uint8Array;
+}
+
+function decodeFields(bytes: Uint8Array): ProtoField[] {
+  const fields: ProtoField[] = [];
+  let offset = 0;
+  while (offset < bytes.length) {
+    const key = readVarint(bytes, offset);
+    offset = key.offset;
+    const no = key.value >> 3;
+    const wireType = key.value & 7;
+    if (wireType === 0) {
+      const value = readVarint(bytes, offset);
+      offset = value.offset;
+      fields.push({ no, value: value.value });
+      continue;
+    }
+    if (wireType !== 2) break;
+    const length = readVarint(bytes, offset);
+    offset = length.offset;
+    const end = offset + length.value;
+    fields.push({ no, value: bytes.subarray(offset, end) });
+    offset = end;
+  }
+  return fields;
+}
+
+function readVarint(bytes: Uint8Array, offset: number): { value: number; offset: number } {
+  let value = 0;
+  let shift = 0;
+  let cursor = offset;
+  while (cursor < bytes.length) {
+    const byte = bytes[cursor++];
+    value |= (byte & 0x7f) << shift;
+    if ((byte & 0x80) === 0) return { value, offset: cursor };
+    shift += 7;
+  }
+  return { value, offset: cursor };
+}
+
+function dataField(fields: ProtoField[], no: number): Uint8Array {
+  const value = fields.find((field) => field.no === no)?.value;
+  if (value instanceof Uint8Array) return value;
+  throw new Error(`Missing data field ${no}`);
+}
+
+function stringField(fields: ProtoField[], no: number): string | undefined {
+  const value = fields.find((field) => field.no === no)?.value;
+  return value instanceof Uint8Array ? new TextDecoder().decode(value) : undefined;
 }

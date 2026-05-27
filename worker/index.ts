@@ -385,6 +385,7 @@ async function handleOpenCodeSdkChatRoute(
       model: prepared.cursorModel,
       sessionKey: sessionAffinity(request),
       sessionOwnerKey: sdkSessionOwner(auth),
+      workingDirectory: prepared.toolContext?.workingDirectory,
       requiresLocalTool: prepared.requiresLocalTool,
       allowToolCall: (toolCall) =>
         toOpenAiToolCalls({

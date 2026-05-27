@@ -579,7 +579,10 @@ describe("Worker", () => {
         },
         body: JSON.stringify({
           model: "composer-2.5",
-          messages: [{ role: "user", content: "Say hello" }]
+          messages: [
+            { role: "system", content: "Environment:\n  Working directory: /tmp/project" },
+            { role: "user", content: "Say hello" }
+          ]
         })
       }),
       env,
@@ -597,6 +600,7 @@ describe("Worker", () => {
     expect(bridgeRequests[0].headers.get("authorization")).toBe("Bearer bridge-token");
     expect(bridgeRequests[0].body.backendBaseUrl).toBe("https://cursor-backend.test");
     expect(bridgeRequests[0].body.localAgentEndpoint).toBe("/test-local-sdk");
+    expect(bridgeRequests[0].body.workingDirectory).toBe("/tmp/project");
   });
 
   it("persists OpenCode SDK sessions in D1 across isolate cache resets", async () => {
