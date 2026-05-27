@@ -3968,6 +3968,7 @@ public enum OpenAICompatibility {
             || schema["dependentSchemas"] != nil
             || schema["minProperties"] != nil
             || schema["maxProperties"] != nil
+            || schema["unevaluatedProperties"] != nil
             || schema["additionalProperties"] != nil else {
             return false
         }
@@ -4053,8 +4054,45 @@ public enum OpenAICompatibility {
                !argumentValueSatisfiesSchema(nestedValue, schema: schema["additionalProperties"], required: false) {
                 return false
             }
+            let evaluatedByComposedSchema = schemaEvaluatesObjectProperty(property, schema: schema)
+            if !validated, !evaluatedByComposedSchema, schema["unevaluatedProperties"] == .bool(false) {
+                return false
+            }
+            if !validated,
+               !evaluatedByComposedSchema,
+               case .object? = schema["unevaluatedProperties"],
+               !argumentValueSatisfiesSchema(nestedValue, schema: schema["unevaluatedProperties"], required: false) {
+                return false
+            }
         }
         return true
+    }
+
+    private static func schemaEvaluatesObjectProperty(_ property: String, schema: [String: JSONValue], depth: Int = 0) -> Bool {
+        guard depth <= 5 else { return false }
+        if case .object(let properties)? = schema["properties"],
+           propertyName(matching: [property], in: Array(properties.keys)) != nil {
+            return true
+        }
+        if !patternPropertySchemas(for: property, schema: schema).isEmpty {
+            return true
+        }
+        let composed = composedParameterSchemas(schema["allOf"]) + composedParameterSchemas(schema["anyOf"]) + composedParameterSchemas(schema["oneOf"])
+        for candidate in composed {
+            let nested = schemaWithInheritedDefinitions(candidate, root: .object(schema))
+            if case .object(let object)? = nested,
+               schemaEvaluatesObjectProperty(property, schema: object, depth: depth + 1) {
+                return true
+            }
+        }
+        for key in ["if", "then", "else", "not"] {
+            let nested = schemaWithInheritedDefinitions(schema[key], root: .object(schema))
+            if case .object(let object)? = nested,
+               schemaEvaluatesObjectProperty(property, schema: object, depth: depth + 1) {
+                return true
+            }
+        }
+        return false
     }
 
     private static func patternPropertySchemas(for property: String, schema: [String: JSONValue]) -> [JSONValue] {
@@ -4076,11 +4114,13 @@ public enum OpenAICompatibility {
     private static func arrayConstraintsApply(_ schema: [String: JSONValue], value: JSONValue, types: [String]) -> Bool {
         guard schema["items"] != nil
             || schema["prefixItems"] != nil
+            || schema["additionalItems"] != nil
             || schema["contains"] != nil
             || schema["minItems"] != nil
             || schema["maxItems"] != nil
             || schema["minContains"] != nil
             || schema["maxContains"] != nil
+            || schema["unevaluatedItems"] != nil
             || schema["uniqueItems"] != nil else {
             return false
         }
@@ -4119,6 +4159,8 @@ public enum OpenAICompatibility {
         let prefixItems: [JSONValue]
         if case .array(let values)? = schema["prefixItems"] {
             prefixItems = values
+        } else if case .array(let values)? = schema["items"] {
+            prefixItems = values
         } else {
             prefixItems = []
         }
@@ -4128,11 +4170,36 @@ public enum OpenAICompatibility {
                 return false
             }
         }
+        if schema["additionalItems"] == .bool(false), values.count > prefixItems.count {
+            return false
+        }
+        if case .object? = schema["additionalItems"] {
+            let itemSchema = schemaWithInheritedDefinitions(schema["additionalItems"], root: .object(schema))
+            for index in prefixItems.count..<values.count {
+                if !argumentValueSatisfiesSchema(values[index], schema: itemSchema, required: true) {
+                    return false
+                }
+            }
+        }
         if schema["items"] == .bool(false), values.count > prefixItems.count {
             return false
         }
         if case .object? = schema["items"] {
             let itemSchema = schemaWithInheritedDefinitions(schema["items"], root: .object(schema))
+            for index in prefixItems.count..<values.count {
+                if !argumentValueSatisfiesSchema(values[index], schema: itemSchema, required: true) {
+                    return false
+                }
+            }
+        }
+        let extrasEvaluated = schema["additionalItems"] == .bool(true)
+            || (schema["additionalItems"]?.objectValue != nil)
+            || (schema["items"]?.objectValue != nil)
+        if !extrasEvaluated, schema["unevaluatedItems"] == .bool(false), values.count > prefixItems.count {
+            return false
+        }
+        if !extrasEvaluated, case .object? = schema["unevaluatedItems"] {
+            let itemSchema = schemaWithInheritedDefinitions(schema["unevaluatedItems"], root: .object(schema))
             for index in prefixItems.count..<values.count {
                 if !argumentValueSatisfiesSchema(values[index], schema: itemSchema, required: true) {
                     return false

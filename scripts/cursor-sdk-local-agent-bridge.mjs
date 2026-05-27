@@ -309,6 +309,7 @@ const schemaAllowsNull = ${schemaAllowsNull.toString()};
 const validateStringConstraints = ${validateStringConstraints.toString()};
 const validateNumberConstraints = ${validateNumberConstraints.toString()};
 const patternPropertySchemasForKey = ${patternPropertySchemasForKey.toString()};
+const schemaEvaluatesObjectProperty = ${schemaEvaluatesObjectProperty.toString()};
 const jsonValueMatchesType = ${jsonValueMatchesType.toString()};
 const jsonValuesEqual = ${jsonValuesEqual.toString()};
 const isRecord = ${isRecord.toString()};
@@ -446,6 +447,7 @@ function validateJsonSchemaValue(value, schema, path, rootSchema = schema, seenR
     || schema.minProperties !== undefined
     || schema.maxProperties !== undefined
     || schema.additionalProperties !== undefined
+    || schema.unevaluatedProperties !== undefined
     || types.includes("object");
   if (objectLike) {
     if (!isRecord(value)) return `Invalid value for ${path}: expected object`;
@@ -499,10 +501,17 @@ function validateJsonSchemaValue(value, schema, path, rootSchema = schema, seenR
         if (error) return error;
         validated = true;
       }
+      const evaluatedByComposedSchema = schemaEvaluatesObjectProperty(schema, key, root, new Set(seenRefs));
       if (!validated && schema.additionalProperties === false) {
         return `Unexpected argument for ${path}: ${key}`;
       } else if (!validated && isRecord(schema.additionalProperties)) {
         const error = validateJsonSchemaValue(nestedValue, schema.additionalProperties, `${path}.${key}`, root, new Set(seenRefs));
+        if (error) return error;
+      }
+      if (!validated && !evaluatedByComposedSchema && schema.unevaluatedProperties === false) {
+        return `Unexpected argument for ${path}: ${key}`;
+      } else if (!validated && !evaluatedByComposedSchema && isRecord(schema.unevaluatedProperties)) {
+        const error = validateJsonSchemaValue(nestedValue, schema.unevaluatedProperties, `${path}.${key}`, root, new Set(seenRefs));
         if (error) return error;
       }
     }
@@ -510,11 +519,13 @@ function validateJsonSchemaValue(value, schema, path, rootSchema = schema, seenR
 
   const arrayLike = schema.items
     || schema.prefixItems
+    || schema.additionalItems !== undefined
     || schema.contains !== undefined
     || schema.minItems !== undefined
     || schema.maxItems !== undefined
     || schema.minContains !== undefined
     || schema.maxContains !== undefined
+    || schema.unevaluatedItems !== undefined
     || schema.uniqueItems !== undefined
     || types.includes("array");
   if (arrayLike) {
@@ -545,17 +556,40 @@ function validateJsonSchemaValue(value, schema, path, rootSchema = schema, seenR
         return `Invalid value for ${path}: expected at most ${maxContains} matching item${maxContains === 1 ? "" : "s"}`;
       }
     }
-    const prefixItems = Array.isArray(schema.prefixItems) ? schema.prefixItems : [];
+    const prefixItems = Array.isArray(schema.prefixItems)
+      ? schema.prefixItems
+      : Array.isArray(schema.items)
+        ? schema.items
+        : [];
     for (let index = 0; index < Math.min(prefixItems.length, value.length); index += 1) {
       const error = validateJsonSchemaValue(value[index], prefixItems[index], `${path}[${index}]`, root, new Set(seenRefs));
       if (error) return error;
     }
+    if (schema.additionalItems === false && value.length > prefixItems.length) {
+      return `Unexpected array item for ${path}: ${prefixItems.length}`;
+    }
+    if (isRecord(schema.additionalItems)) {
+      for (let index = prefixItems.length; index < value.length; index += 1) {
+        const error = validateJsonSchemaValue(value[index], schema.additionalItems, `${path}[${index}]`, root, new Set(seenRefs));
+        if (error) return error;
+      }
+    }
     if (schema.items === false && value.length > prefixItems.length) {
       return `Unexpected array item for ${path}: ${prefixItems.length}`;
     }
-    if (isRecord(schema.items)) {
+    if (!Array.isArray(schema.items) && isRecord(schema.items)) {
       for (let index = prefixItems.length; index < value.length; index += 1) {
         const error = validateJsonSchemaValue(value[index], schema.items, `${path}[${index}]`, root, new Set(seenRefs));
+        if (error) return error;
+      }
+    }
+    const extrasEvaluated = (!Array.isArray(schema.items) && isRecord(schema.items)) || isRecord(schema.additionalItems) || schema.additionalItems === true;
+    if (!extrasEvaluated && schema.unevaluatedItems === false && value.length > prefixItems.length) {
+      return `Unexpected array item for ${path}: ${prefixItems.length}`;
+    }
+    if (!extrasEvaluated && isRecord(schema.unevaluatedItems)) {
+      for (let index = prefixItems.length; index < value.length; index += 1) {
+        const error = validateJsonSchemaValue(value[index], schema.unevaluatedItems, `${path}[${index}]`, root, new Set(seenRefs));
         if (error) return error;
       }
     }
@@ -583,6 +617,7 @@ function schemaHasStructuralKeyword(schema) {
     "$defs",
     "$ref",
     "additionalProperties",
+    "additionalItems",
     "allOf",
     "anyOf",
     "const",
@@ -609,6 +644,8 @@ function schemaHasStructuralKeyword(schema) {
     "dependentRequired",
     "dependentSchemas",
     "type",
+    "unevaluatedItems",
+    "unevaluatedProperties",
     "uniqueItems"
   ].some((key) => Object.prototype.hasOwnProperty.call(schema, key));
 }
@@ -730,6 +767,27 @@ function patternPropertySchemasForKey(schema, key) {
     } catch {}
   }
   return output;
+}
+
+function schemaEvaluatesObjectProperty(schema, key, rootSchema, seenRefs = new Set()) {
+  schema = canonicalJsonSchema(schema);
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return false;
+  const reference = schemaReferenceTarget(schema, rootSchema, seenRefs);
+  if (reference) return schemaEvaluatesObjectProperty(reference.schema, key, rootSchema, reference.seenRefs);
+  if (isRecord(schema.properties) && Object.prototype.hasOwnProperty.call(schema.properties, key)) return true;
+  if (patternPropertySchemasForKey(schema, key).length > 0) return true;
+  for (const keyword of ["allOf", "anyOf", "oneOf"]) {
+    if (!Array.isArray(schema[keyword])) continue;
+    if (schema[keyword].some((candidate) => schemaEvaluatesObjectProperty(candidate, key, rootSchema, new Set(seenRefs)))) {
+      return true;
+    }
+  }
+  for (const keyword of ["if", "then", "else", "not"]) {
+    if (isRecord(schema[keyword]) && schemaEvaluatesObjectProperty(schema[keyword], key, rootSchema, new Set(seenRefs))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function jsonValueMatchesType(value, type) {

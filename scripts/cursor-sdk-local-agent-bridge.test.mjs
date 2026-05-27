@@ -461,6 +461,85 @@ describe("Cursor SDK local-agent bridge", () => {
     })).toBe("Invalid value for run_steps.labels: expected at most 1 matching item");
   });
 
+  it("validates dynamic client MCP tuple array schemas", () => {
+    const tools = clientMcpToolDefinitions([
+      {
+        name: "run_pipeline",
+        parameters: {
+          type: "object",
+          properties: {
+            steps: {
+              type: "array",
+              items: [
+                { const: "install" },
+                { const: "build" }
+              ],
+              additionalItems: false
+            }
+          },
+          required: ["steps"]
+        }
+      }
+    ]);
+
+    expect(validateClientMcpToolCall(tools, "run_pipeline", {
+      steps: ["install", "build"]
+    })).toBe(null);
+    expect(validateClientMcpToolCall(tools, "run_pipeline", {
+      steps: ["install", "test"]
+    })).toBe("Invalid value for run_pipeline.steps[1]: expected constant \"build\"");
+    expect(validateClientMcpToolCall(tools, "run_pipeline", {
+      steps: ["install", "build", "test"]
+    })).toBe("Unexpected array item for run_pipeline.steps: 2");
+  });
+
+  it("validates dynamic client MCP unevaluated object properties", () => {
+    const tools = clientMcpToolDefinitions([
+      {
+        name: "configure_deploy",
+        parameters: {
+          type: "object",
+          allOf: [
+            {
+              properties: {
+                command: { type: "string" }
+              },
+              required: ["command"]
+            },
+            {
+              properties: {
+                metadata: {
+                  type: "object",
+                  properties: {
+                    owner: { type: "string" }
+                  },
+                  required: ["owner"],
+                  unevaluatedProperties: false
+                }
+              },
+              required: ["metadata"]
+            }
+          ],
+          unevaluatedProperties: false
+        }
+      }
+    ]);
+
+    expect(validateClientMcpToolCall(tools, "configure_deploy", {
+      command: "npm run build",
+      metadata: { owner: "web" }
+    })).toBe(null);
+    expect(validateClientMcpToolCall(tools, "configure_deploy", {
+      command: "npm run build",
+      metadata: { owner: "web", extra: true }
+    })).toBe("Unexpected argument for configure_deploy.metadata: extra");
+    expect(validateClientMcpToolCall(tools, "configure_deploy", {
+      command: "npm run build",
+      metadata: { owner: "web" },
+      debug: true
+    })).toBe("Unexpected argument for configure_deploy: debug");
+  });
+
   it("validates dynamic client MCP oneOf schemas exactly", () => {
     const tools = clientMcpToolDefinitions([
       {
