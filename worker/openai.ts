@@ -1568,6 +1568,10 @@ function normalizeToolArguments(args: Record<string, unknown>, tool: OpenAiToolS
   if (selectedTool === "strreplaceeditor") {
     return strReplaceEditorArguments(argsToNormalize, emittedCanonical, tool);
   }
+  const commandStyleFile = commandStyleFileArguments(argsToNormalize, emittedCanonical, tool);
+  if (commandStyleFile) {
+    return commandStyleFile;
+  }
   if (emittedCanonical !== "shell" && selectedCanonical === "shell") {
     return shellFallbackArguments(argsToNormalize, emittedName, tool);
   }
@@ -1604,6 +1608,9 @@ function schemaLooksCompatible(emittedName: string, tool: OpenAiToolSpec): boole
   const canonical = canonicalToolName(emittedName);
   if (normalizeToolName(tool.name) === "strreplaceeditor" && !["write", "read", "edit"].includes(canonical)) {
     return false;
+  }
+  if (commandStyleFileToolSupports(canonical, tool)) {
+    return true;
   }
   switch (canonical) {
     case "shell":
@@ -1849,6 +1856,102 @@ function viewRangeFromArgs(args: Record<string, unknown>): number[] | undefined 
   const start = Math.max(1, Math.trunc(offset ?? 1));
   if (limit === undefined || limit <= 0) return [start, -1];
   return [start, start + Math.trunc(limit) - 1];
+}
+
+function commandStyleFileArguments(
+  args: Record<string, unknown>,
+  emittedCanonical: string,
+  tool: OpenAiToolSpec | undefined
+): Record<string, unknown> | undefined {
+  if (!["write", "read", "edit", "delete"].includes(emittedCanonical)) return undefined;
+  const schema = toolParameterSchema(tool);
+  if (!schema.properties.length) return undefined;
+  const normalizedProperties = new Map(schema.properties.map((property) => [normalizeToolName(property), property]));
+  const operationKey = firstMatchingProperty(operationPropertyCandidates(), schema.properties, normalizedProperties);
+  const pathKey = firstMatchingProperty(pathCandidates(), schema.properties, normalizedProperties);
+  const path = firstArg(args, [...pathCandidates(), "target_file", "targetFile"]);
+  if (!operationKey || !pathKey || !shouldIncludeOptionalPath(path)) return undefined;
+
+  const output: Record<string, unknown> = {
+    [operationKey]: operationValue(tool, operationKey, emittedCanonical),
+    [pathKey]: path
+  };
+  if (emittedCanonical === "write") {
+    const content = firstStringArgAllowEmpty(args, "fileText", "file_text", "content", "contents", "text", "fileContent", "file_content", "streamContent");
+    const contentKey = firstMatchingProperty(["content", "contents", "fileText", "file_text", "fileContent", "file_content", "text"], schema.properties, normalizedProperties);
+    if (!contentKey || content === undefined) return undefined;
+    output[contentKey] = content;
+  } else if (emittedCanonical === "edit") {
+    const oldText = firstStringArgAllowEmpty(args, "oldString", "old_string", "old_str", "oldText", "old_text", "search", "searchString", "search_string");
+    const newText = firstStringArgAllowEmpty(args, "newString", "new_string", "new_str", "newText", "new_text", "replacement", "replace", "content");
+    const oldKey = firstMatchingProperty(["oldString", "old_string", "old_str", "old", "search", "searchString", "search_string"], schema.properties, normalizedProperties);
+    const newKey = firstMatchingProperty(["newString", "new_string", "new_str", "replacement", "replace", "content"], schema.properties, normalizedProperties);
+    if (!oldKey || !newKey || oldText === undefined || newText === undefined) return undefined;
+    output[oldKey] = oldText;
+    output[newKey] = newText;
+  } else if (emittedCanonical === "read") {
+    copyOptionalArgument(output, schema.properties, normalizedProperties, args, ["offset", "start", "startLine", "start_line"]);
+    copyOptionalArgument(output, schema.properties, normalizedProperties, args, ["limit", "maxLines", "max_lines", "lineCount", "line_count"]);
+  }
+  return output;
+}
+
+function copyOptionalArgument(
+  output: Record<string, unknown>,
+  properties: string[],
+  normalizedProperties: Map<string, string>,
+  args: Record<string, unknown>,
+  candidates: string[]
+) {
+  const value = firstArg(args, candidates);
+  const key = firstMatchingProperty(candidates, properties, normalizedProperties);
+  if (key && value !== undefined) output[key] = value;
+}
+
+function commandStyleFileToolSupports(canonical: string, tool: OpenAiToolSpec): boolean {
+  if (!["write", "read", "edit", "delete"].includes(canonical)) return false;
+  const schema = toolParameterSchema(tool);
+  if (!schema.properties.length) return false;
+  const normalizedProperties = new Map(schema.properties.map((property) => [normalizeToolName(property), property]));
+  const has = (candidates: string[]) => Boolean(firstMatchingProperty(candidates, schema.properties, normalizedProperties));
+  if (!has(operationPropertyCandidates()) || !has(pathCandidates())) return false;
+  if (canonical === "write") return has(["content", "contents", "fileText", "file_text", "fileContent", "file_content", "text"]);
+  if (canonical === "edit") {
+    return has(["oldString", "old_string", "old_str", "old", "search", "searchString", "search_string"])
+      && has(["newString", "new_string", "new_str", "replacement", "replace", "content"]);
+  }
+  return true;
+}
+
+function operationPropertyCandidates(): string[] {
+  return ["command", "action", "operation", "op", "mode"];
+}
+
+function operationValue(tool: OpenAiToolSpec | undefined, property: string, canonical: string): string {
+  const candidates: Record<string, string[]> = {
+    write: ["write", "create", "overwrite", "replace"],
+    read: ["read", "view", "open"],
+    edit: ["replace", "str_replace", "edit", "update"],
+    delete: ["delete", "remove"]
+  };
+  const allowed = stringEnumValues(tool, property);
+  for (const candidate of candidates[canonical] ?? [canonical]) {
+    const allowedMatch = allowed.find((value) => normalizeToolName(value) === normalizeToolName(candidate));
+    if (allowedMatch) return allowedMatch;
+  }
+  return (candidates[canonical] ?? [canonical])[0];
+}
+
+function stringEnumValues(tool: OpenAiToolSpec | undefined, property: string): string[] {
+  const propertySchema = toolPropertySchema(tool, property);
+  if (!isRecord(propertySchema) || !Array.isArray(propertySchema.enum)) return [];
+  return propertySchema.enum.filter((item): item is string => typeof item === "string");
+}
+
+function toolPropertySchema(tool: OpenAiToolSpec | undefined, property: string): unknown {
+  const parameters = isRecord(tool?.parameters) ? tool.parameters : undefined;
+  const properties = isRecord(parameters?.properties) ? parameters.properties : undefined;
+  return properties?.[property];
 }
 
 function resolveSpecificMCPTool(args: Record<string, unknown>, tools: OpenAiToolSpec[]): OpenAiToolSpec | undefined {

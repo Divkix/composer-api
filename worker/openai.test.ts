@@ -875,6 +875,47 @@ describe("OpenAI compatibility adapter", () => {
     ]);
   });
 
+  it("maps SDK file operations to action-based compound file tools", () => {
+    const tools = [
+      {
+        name: "file_manager",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            action: { type: "string", enum: ["read", "write", "replace", "delete"] },
+            path: { type: "string" },
+            content: { type: "string" },
+            old: { type: "string" },
+            replacement: { type: "string" },
+            offset: { type: "integer" },
+            limit: { type: "integer" }
+          },
+          required: ["action", "path"]
+        }
+      }
+    ];
+
+    const toolCalls = toOpenAiToolCalls({
+      responseId: "chatcmpl_test",
+      tools,
+      toolCalls: [
+        { name: "write", arguments: { path: "src/App.tsx", fileText: "export default function App() { return null }" } },
+        { name: "read", arguments: { path: "src/App.tsx", offset: 5, limit: 10 } },
+        { name: "edit", arguments: { path: "src/App.tsx", oldString: "Hello", newString: "Hi" } },
+        { name: "delete", arguments: { path: "src/old.tsx" } }
+      ]
+    });
+
+    expect(toolCalls.map((call) => call.function.name)).toEqual(["file_manager", "file_manager", "file_manager", "file_manager"]);
+    expect(toolCalls.map((call) => JSON.parse(call.function.arguments))).toEqual([
+      { action: "write", path: "src/App.tsx", content: "export default function App() { return null }" },
+      { action: "read", path: "src/App.tsx", offset: 5, limit: 10 },
+      { action: "replace", path: "src/App.tsx", old: "Hello", replacement: "Hi" },
+      { action: "delete", path: "src/old.tsx" }
+    ]);
+  });
+
   it("does not emit SDK-native tool names outside the advertised client tools", () => {
     const toolCalls = toOpenAiToolCalls({
       responseId: "chatcmpl_test",

@@ -2059,6 +2059,97 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual(editArguments["new_str"] as? String, "Hi")
     }
 
+    func testChatToolCallsMapSDKFileOperationsToActionBasedFileTool() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[{"role":"user","content":"update app files"}],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"file_manager",
+                "parameters":{
+                  "type":"object",
+                  "properties":{
+                    "action":{"type":"string","enum":["read","write","replace","delete"]},
+                    "path":{"type":"string"},
+                    "content":{"type":"string"},
+                    "old":{"type":"string"},
+                    "replacement":{"type":"string"},
+                    "offset":{"type":"integer"},
+                    "limit":{"type":"integer"}
+                  },
+                  "required":["action","path"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+
+        let output = CursorSDKOutput(text: "", toolCalls: [
+            CursorToolCall(name: "write", arguments: [
+                "path": .string("src/App.tsx"),
+                "fileText": .string("export default function App() { return null }")
+            ]),
+            CursorToolCall(name: "read", arguments: [
+                "path": .string("src/App.tsx"),
+                "offset": .number(5),
+                "limit": .number(10)
+            ]),
+            CursorToolCall(name: "edit", arguments: [
+                "path": .string("src/App.tsx"),
+                "oldString": .string("Hello"),
+                "newString": .string("Hi")
+            ]),
+            CursorToolCall(name: "delete", arguments: [
+                "path": .string("src/old.tsx")
+            ])
+        ], agentID: "agent-test", runID: "run-test")
+
+        let object = OpenAICompatibility.chatCompletionResponse(
+            id: "chatcmpl_test",
+            created: 1,
+            prepared: prepared,
+            output: output
+        )
+
+        let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
+        let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        let toolCalls = try XCTUnwrap(message["tool_calls"] as? [[String: Any]])
+        XCTAssertEqual(toolCalls.count, 4)
+
+        let writeFunction = try XCTUnwrap(toolCalls[0]["function"] as? [String: Any])
+        let writeArguments = try decodedArguments(writeFunction)
+        XCTAssertEqual(writeFunction["name"] as? String, "file_manager")
+        XCTAssertEqual(writeArguments["action"] as? String, "write")
+        XCTAssertEqual(writeArguments["path"] as? String, "src/App.tsx")
+        XCTAssertEqual(writeArguments["content"] as? String, "export default function App() { return null }")
+
+        let readFunction = try XCTUnwrap(toolCalls[1]["function"] as? [String: Any])
+        let readArguments = try decodedArguments(readFunction)
+        XCTAssertEqual(readFunction["name"] as? String, "file_manager")
+        XCTAssertEqual(readArguments["action"] as? String, "read")
+        XCTAssertEqual(readArguments["path"] as? String, "src/App.tsx")
+        XCTAssertEqual((readArguments["offset"] as? NSNumber)?.intValue, 5)
+        XCTAssertEqual((readArguments["limit"] as? NSNumber)?.intValue, 10)
+
+        let editFunction = try XCTUnwrap(toolCalls[2]["function"] as? [String: Any])
+        let editArguments = try decodedArguments(editFunction)
+        XCTAssertEqual(editFunction["name"] as? String, "file_manager")
+        XCTAssertEqual(editArguments["action"] as? String, "replace")
+        XCTAssertEqual(editArguments["path"] as? String, "src/App.tsx")
+        XCTAssertEqual(editArguments["old"] as? String, "Hello")
+        XCTAssertEqual(editArguments["replacement"] as? String, "Hi")
+
+        let deleteFunction = try XCTUnwrap(toolCalls[3]["function"] as? [String: Any])
+        let deleteArguments = try decodedArguments(deleteFunction)
+        XCTAssertEqual(deleteFunction["name"] as? String, "file_manager")
+        XCTAssertEqual(deleteArguments["action"] as? String, "delete")
+        XCTAssertEqual(deleteArguments["path"] as? String, "src/old.tsx")
+    }
+
     func testChatToolCallsMapSDKCoreToolsToOpenCodeSchemas() throws {
         let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
         {

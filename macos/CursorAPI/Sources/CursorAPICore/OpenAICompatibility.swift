@@ -1470,6 +1470,10 @@ public enum OpenAICompatibility {
 
         guard !properties.isEmpty else { return arguments }
 
+        if let commandStyleFile = commandStyleFileArguments(arguments, sdkToolName: sdkToolName, tool: tool, properties: properties) {
+            return commandStyleFile
+        }
+
         var output: [String: JSONValue] = [:]
         var consumed = Set<String>()
         let required = requiredParameterNames(tool)
@@ -2018,6 +2022,126 @@ public enum OpenAICompatibility {
         return .array([.number(Double(start)), .number(Double(start + limit - 1))])
     }
 
+    private static func commandStyleFileArguments(
+        _ arguments: [String: JSONValue],
+        sdkToolName: String,
+        tool: OpenAIToolSpec,
+        properties: [String]
+    ) -> [String: JSONValue]? {
+        let canonical = canonicalToolName(sdkToolName)
+        guard ["write", "read", "edit", "delete"].contains(canonical),
+              let operationKey = propertyName(matching: operationPropertyAliases(), in: properties),
+              let pathKey = propertyName(matching: pathPropertyAliases(), in: properties),
+              let path = firstArgument(in: arguments, keys: pathPropertyAliases() + ["target_file", "targetFile"])?.value,
+              shouldIncludeOptionalPath(path) else {
+            return nil
+        }
+
+        var output: [String: JSONValue] = [
+            operationKey: .string(operationValue(for: canonical, property: operationKey, tool: tool)),
+            pathKey: path
+        ]
+
+        switch canonical {
+        case "write":
+            guard let content = firstArgument(in: arguments, keys: ["fileText", "file_text", "content", "contents", "text", "fileContent", "file_content", "streamContent"])?.value,
+                  let contentKey = propertyName(matching: ["content", "contents", "fileText", "file_text", "fileContent", "file_content", "text"], in: properties) else {
+                return nil
+            }
+            output[contentKey] = content
+        case "edit":
+            guard let oldText = firstArgument(in: arguments, keys: ["oldString", "old_string", "old_str", "oldText", "old_text", "search", "searchString", "search_string"])?.value,
+                  let newText = firstArgument(in: arguments, keys: ["newString", "new_string", "new_str", "newText", "new_text", "replacement", "replace", "content"])?.value,
+                  let oldKey = propertyName(matching: ["oldString", "old_string", "old_str", "old", "search", "searchString", "search_string"], in: properties),
+                  let newKey = propertyName(matching: ["newString", "new_string", "new_str", "replacement", "replace", "content"], in: properties) else {
+                return nil
+            }
+            output[oldKey] = oldText
+            output[newKey] = newText
+        case "read":
+            copyOptionalArgument(&output, from: arguments, properties: properties, candidates: ["offset", "start", "startLine", "start_line"])
+            copyOptionalArgument(&output, from: arguments, properties: properties, candidates: ["limit", "maxLines", "max_lines", "lineCount", "line_count"])
+        default:
+            break
+        }
+        return output
+    }
+
+    private static func copyOptionalArgument(
+        _ output: inout [String: JSONValue],
+        from arguments: [String: JSONValue],
+        properties: [String],
+        candidates: [String]
+    ) {
+        guard let value = firstArgument(in: arguments, keys: candidates)?.value,
+              let key = propertyName(matching: candidates, in: properties) else {
+            return
+        }
+        output[key] = value
+    }
+
+    private static func commandStyleFileToolSupports(_ canonical: String, tool: OpenAIToolSpec, properties: [String]) -> Bool {
+        guard ["write", "read", "edit", "delete"].contains(canonical),
+              propertyName(matching: operationPropertyAliases(), in: properties) != nil,
+              propertyName(matching: pathPropertyAliases(), in: properties) != nil else {
+            return false
+        }
+        switch canonical {
+        case "write":
+            return propertyName(matching: ["content", "contents", "fileText", "file_text", "fileContent", "file_content", "text"], in: properties) != nil
+        case "edit":
+            return propertyName(matching: ["oldString", "old_string", "old_str", "old", "search", "searchString", "search_string"], in: properties) != nil
+                && propertyName(matching: ["newString", "new_string", "new_str", "replacement", "replace", "content"], in: properties) != nil
+        default:
+            return true
+        }
+    }
+
+    private static func operationPropertyAliases() -> [String] {
+        ["command", "action", "operation", "op", "mode"]
+    }
+
+    private static func operationValue(for canonical: String, property: String, tool: OpenAIToolSpec) -> String {
+        let candidates: [String]
+        switch canonical {
+        case "write":
+            candidates = ["write", "create", "overwrite", "replace"]
+        case "read":
+            candidates = ["read", "view", "open"]
+        case "edit":
+            candidates = ["replace", "str_replace", "edit", "update"]
+        case "delete":
+            candidates = ["delete", "remove"]
+        default:
+            candidates = [canonical]
+        }
+
+        let allowed = stringEnumValues(for: property, tool: tool)
+        for candidate in candidates {
+            if let match = allowed.first(where: { normalizedName($0) == normalizedName(candidate) }) {
+                return match
+            }
+        }
+        return candidates.first ?? canonical
+    }
+
+    private static func stringEnumValues(for property: String, tool: OpenAIToolSpec) -> [String] {
+        guard let propertySchema = parameterPropertySchema(property, tool: tool),
+              case .object(let schema) = propertySchema,
+              case .array(let values)? = schema["enum"] else {
+            return []
+        }
+        return values.compactMap(\.stringValue)
+    }
+
+    private static func parameterPropertySchema(_ property: String, tool: OpenAIToolSpec) -> JSONValue? {
+        guard case .object(let root)? = tool.parameters,
+              case .object(let properties)? = root["properties"] else {
+            return nil
+        }
+        return properties[property]
+    }
+
     private static func schemaLooksCompatible(sdkToolName: String, tool: OpenAIToolSpec) -> Bool {
         let properties = parameterPropertyNames(tool)
         guard !properties.isEmpty else { return false }
@@ -2028,6 +2152,9 @@ public enum OpenAICompatibility {
         if normalizedName(tool.name) == "strreplaceeditor",
            !["write", "read", "edit"].contains(canonical) {
             return false
+        }
+        if commandStyleFileToolSupports(canonical, tool: tool, properties: properties) {
+            return true
         }
         switch canonical {
         case "shell":
