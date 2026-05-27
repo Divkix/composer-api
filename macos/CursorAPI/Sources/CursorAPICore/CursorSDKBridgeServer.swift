@@ -12,6 +12,7 @@ actor CursorSDKBridgeServer {
 
     private var process: Process?
     private var endpoint: CursorSDKBridgeEndpoint?
+    private var logHandle: FileHandle?
     private let token = UUID().uuidString.replacingOccurrences(of: "-", with: "")
 
     func endpoint(settings: CursorAPISettings) async throws -> CursorSDKBridgeEndpoint {
@@ -64,13 +65,19 @@ actor CursorSDKBridgeServer {
         environment["CURSOR_SDK_BRIDGE_HOST"] = "127.0.0.1"
         environment["CURSOR_SDK_BRIDGE_PORT"] = String(port)
         environment["CURSOR_SDK_BRIDGE_TOKEN"] = token
-        environment["CURSOR_SDK_BRIDGE_REQUEST_TIMEOUT_MS"] = "120000"
+        environment["CURSOR_SDK_BRIDGE_RUN_TIMEOUT_MS"] = "120000"
         process.environment = environment
         process.currentDirectoryURL = script.deletingLastPathComponent()
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
+        let logHandle = try bridgeLogHandle()
+        process.standardOutput = logHandle
+        process.standardError = logHandle
+        process.terminationHandler = { process in
+            let message = "Cursor SDK bridge exited with status \(process.terminationStatus)\n"
+            try? logHandle.write(contentsOf: Data(message.utf8))
+        }
         try process.run()
         self.process = process
+        self.logHandle = logHandle
     }
 
     private func runtimeExecutable() throws -> URL {
@@ -114,6 +121,26 @@ actor CursorSDKBridgeServer {
         process?.terminate()
         process = nil
         endpoint = nil
+        try? logHandle?.close()
+        logHandle = nil
+    }
+
+    private func bridgeLogHandle() throws -> FileHandle {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory()).appending(path: "api-for-cursor", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appending(path: "sdk-bridge.log")
+        if let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue,
+           size > 1_000_000 {
+            try? FileManager.default.removeItem(at: url)
+        }
+        if !FileManager.default.fileExists(atPath: url.path) {
+            FileManager.default.createFile(atPath: url.path, contents: nil)
+        }
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        let header = "\n--- Cursor SDK bridge launch \(Date()) ---\n"
+        try handle.write(contentsOf: Data(header.utf8))
+        return handle
     }
 
     private func isHealthy(_ url: URL) async -> Bool {

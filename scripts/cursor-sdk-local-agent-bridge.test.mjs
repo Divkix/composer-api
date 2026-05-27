@@ -66,6 +66,48 @@ describe("Cursor SDK local-agent bridge", () => {
     expect(isForwardableSDKToolCall(normalized)).toBe(true);
   });
 
+  it("normalizes SDK tool calls that use OpenAI-style argument keys", () => {
+    const normalized = normalizeSDKToolCall({
+      name: "glob",
+      arguments: {
+        targetDirectory: "src",
+        globPattern: "**/*.tsx"
+      }
+    });
+
+    expect(normalized).toEqual({
+      name: "glob",
+      arguments: {
+        targetDirectory: "src",
+        globPattern: "**/*.tsx"
+      }
+    });
+    expect(isForwardableSDKToolCall(normalized)).toBe(true);
+  });
+
+  it("normalizes local client MCP forwarding tools with alternate payload keys", () => {
+    const normalized = normalizeSDKToolCall({
+      type: "mcp",
+      arguments: {
+        providerIdentifier: "client",
+        toolName: "client_glob",
+        arguments: JSON.stringify({
+          targetDirectory: "src",
+          globPattern: "**/*.tsx"
+        })
+      }
+    });
+
+    expect(normalized).toEqual({
+      name: "glob",
+      arguments: {
+        targetDirectory: "src",
+        globPattern: "**/*.tsx"
+      }
+    });
+    expect(isForwardableSDKToolCall(normalized)).toBe(true);
+  });
+
   it("keeps dynamic harness MCP tools as client MCP calls", () => {
     const normalized = normalizeSDKToolCall({
       type: "mcp",

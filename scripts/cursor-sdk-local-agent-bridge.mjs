@@ -450,7 +450,7 @@ function toolCallFromDelta(update) {
 function normalizeSDKToolCall(toolCall) {
   const name = typeof toolCall.type === "string" ? toolCall.type : typeof toolCall.name === "string" ? toolCall.name : "";
   if (!name) return null;
-  const args = toolCall.args && typeof toolCall.args === "object" && !Array.isArray(toolCall.args) ? toolCall.args : {};
+  const args = objectArgumentFrom(toolCall, "args", "arguments", "input", "parameters", "params");
   const clientMcpTool = normalizeClientMcpToolCall(name, args);
   if (clientMcpTool) return clientMcpTool;
   return {
@@ -465,7 +465,7 @@ function normalizeClientMcpToolCall(name, args) {
   if (provider && provider !== clientMcpServerName) return null;
   const toolName = firstString(args, "toolName", "tool_name", "tool", "name");
   const sdkName = sdkToolNameFromClientMcpTool(toolName);
-  const payload = args.args && typeof args.args === "object" && !Array.isArray(args.args) ? args.args : {};
+  const payload = objectArgumentFrom(args, "args", "arguments", "input", "parameters", "params", "payload", "data");
   if (!sdkName) {
     return {
       name: "mcp",
@@ -599,6 +599,39 @@ function normalizeArguments(args) {
     output[key] = normalizeJsonValue(value);
   }
   return output;
+}
+
+function objectArgumentFrom(source, ...keys) {
+  if (!isRecord(source)) return {};
+  for (const key of keys) {
+    const value = source[key];
+    if (isRecord(value)) return value;
+    if (typeof value === "string") {
+      const parsed = parseJsonObject(value);
+      if (parsed) return parsed;
+    }
+  }
+  const normalizedKeys = new Set(keys.map(normalizeToolName));
+  for (const [key, value] of Object.entries(source)) {
+    if (!normalizedKeys.has(normalizeToolName(key))) continue;
+    if (isRecord(value)) return value;
+    if (typeof value === "string") {
+      const parsed = parseJsonObject(value);
+      if (parsed) return parsed;
+    }
+  }
+  return {};
+}
+
+function parseJsonObject(value) {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("{")) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 function normalizeJsonValue(value) {

@@ -44,6 +44,7 @@ public extension CursorSDKHarness {
 public struct LocalCursorSDKHarness: CursorSDKHarness {
     private static let sessionStore = CursorSDKSessionStore(maxEntries: 512)
     private static let toolRetryAttempts = 3
+    private static let bridgeTransportAttempts = 2
 
     public init() {}
 
@@ -187,7 +188,7 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
         settings: CursorAPISettings,
         onEvent: @escaping @Sendable (CursorSDKStreamEvent) -> Void
     ) async throws -> CursorSDKOutput {
-        let output = try await runActualSDKBridgeRequest(
+        let output = try await runSDKBridgeRequestWithTransportRetry(
             apiKey: apiKey,
             agentID: agentID,
             runID: runID,
@@ -201,6 +202,34 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
             onEvent(.text(output.text))
         }
         return output
+    }
+
+    private func runSDKBridgeRequestWithTransportRetry(
+        apiKey: String,
+        agentID: String,
+        runID: String,
+        prepared: PreparedChatRequest,
+        settings: CursorAPISettings
+    ) async throws -> CursorSDKOutput {
+        var lastError: (any Error)?
+        for attempt in 1...Self.bridgeTransportAttempts {
+            do {
+                return try await runActualSDKBridgeRequest(
+                    apiKey: apiKey,
+                    agentID: agentID,
+                    runID: attempt == 1 ? runID : Self.newRunID(),
+                    prepared: prepared,
+                    settings: settings
+                )
+            } catch {
+                lastError = error
+                guard attempt < Self.bridgeTransportAttempts, isRetryableBridgeTransportError(error) else {
+                    throw error
+                }
+                try? await Task.sleep(nanoseconds: 150_000_000)
+            }
+        }
+        throw lastError ?? CursorAPIError.transport("Cursor SDK bridge request failed.")
     }
 
     private func runActualSDKBridgeRequest(
@@ -226,7 +255,13 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
             "tools": Self.bridgeToolObjects(prepared.tools)
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.withoutEscapingSlashes])
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw CursorAPIError.transport("Cursor SDK bridge request failed: \(error.localizedDescription)")
+        }
         guard let http = response as? HTTPURLResponse else {
             throw CursorAPIError.transport("Cursor SDK bridge did not return an HTTP response.")
         }
@@ -246,6 +281,13 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
             return CursorToolCall(name: name, arguments: arguments)
         }
         return CursorSDKOutput(text: text, toolCalls: toolCalls, agentID: bridgeAgentID, runID: bridgeRunID)
+    }
+
+    private func isRetryableBridgeTransportError(_ error: any Error) -> Bool {
+        if case .transport = error as? CursorAPIError {
+            return true
+        }
+        return false
     }
 
     private static func bridgeToolObjects(_ tools: [OpenAIToolSpec]) -> [[String: Any]] {
