@@ -1212,7 +1212,7 @@ function isForwardableSDKToolCall(toolCall, clientTools = []) {
     case "todowrite":
       return Object.keys(args).length > 0;
     default:
-      return Object.keys(args).length > 0;
+      return false;
   }
 }
 
@@ -1225,7 +1225,7 @@ function clientToolPayloadIsComplete(toolName, payload, clientTools = []) {
 
 function mcpClientToolPayloadIsComplete(args, clientTools = []) {
   const tool = matchingClientToolForMcpCall(args, clientTools);
-  if (!tool) return true;
+  if (!tool) return false;
   const payload = clientMcpPayloadArguments(args);
   const schema = clientMcpInputSchema(tool.parameters);
   return validateJsonSchemaValue(payload, schema, tool.name, schema) === null;

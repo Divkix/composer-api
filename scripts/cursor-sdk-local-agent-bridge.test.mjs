@@ -51,7 +51,8 @@ describe("Cursor SDK local-agent bridge", () => {
 
   it("requires both provider and tool names for SDK MCP forwarding", () => {
     expect(isForwardableSDKToolCall({ name: "mcp", arguments: { providerIdentifier: "client" } })).toBe(false);
-    expect(isForwardableSDKToolCall({ name: "mcp", arguments: { providerIdentifier: "client", toolName: "glob" } })).toBe(true);
+    expect(isForwardableSDKToolCall({ name: "mcp", arguments: { providerIdentifier: "client", toolName: "glob" } })).toBe(false);
+    expect(isForwardableSDKToolCall({ name: "glob", arguments: { globPattern: "**/*" } })).toBe(true);
   });
 
   it("normalizes local client MCP forwarding tools back to SDK tool names", () => {
@@ -160,6 +161,19 @@ describe("Cursor SDK local-agent bridge", () => {
   });
 
   it("keeps dynamic harness MCP tools as client MCP calls", () => {
+    const clientTools = [
+      {
+        name: "probe_write_file",
+        parameters: {
+          type: "object",
+          properties: {
+            file_path: { type: "string" },
+            contents: { type: "string" }
+          },
+          required: ["file_path", "contents"]
+        }
+      }
+    ];
     const normalized = normalizeSDKToolCall({
       type: "mcp",
       args: {
@@ -170,7 +184,7 @@ describe("Cursor SDK local-agent bridge", () => {
           contents: "ok"
         }
       }
-    });
+    }, clientTools);
 
     expect(normalized).toEqual({
       name: "mcp",
@@ -183,10 +197,23 @@ describe("Cursor SDK local-agent bridge", () => {
         }
       }
     });
-    expect(isForwardableSDKToolCall(normalized)).toBe(true);
+    expect(isForwardableSDKToolCall(normalized, clientTools)).toBe(true);
   });
 
   it("keeps dynamic harness MCP tools with direct payload fields as client MCP calls", () => {
+    const clientTools = [
+      {
+        name: "probe_write_file",
+        parameters: {
+          type: "object",
+          properties: {
+            file_path: { type: "string" },
+            contents: { type: "string" }
+          },
+          required: ["file_path", "contents"]
+        }
+      }
+    ];
     const normalized = normalizeSDKToolCall({
       type: "mcp",
       args: {
@@ -195,7 +222,7 @@ describe("Cursor SDK local-agent bridge", () => {
         file_path: "marker.txt",
         contents: "ok"
       }
-    });
+    }, clientTools);
 
     expect(normalized).toEqual({
       name: "mcp",
@@ -208,7 +235,7 @@ describe("Cursor SDK local-agent bridge", () => {
         }
       }
     });
-    expect(isForwardableSDKToolCall(normalized)).toBe(true);
+    expect(isForwardableSDKToolCall(normalized, clientTools)).toBe(true);
   });
 
   it("keeps provider-style harness tools on the local client MCP server", () => {
@@ -285,6 +312,57 @@ describe("Cursor SDK local-agent bridge", () => {
       }
     });
     expect(isForwardableSDKToolCall(normalized, clientTools)).toBe(true);
+  });
+
+  it("normalizes direct provider-style harness MCP tool events to exact client MCP calls", () => {
+    const clientTools = [
+      {
+        name: "mcp__filesystem__write_file",
+        parameters: {
+          type: "object",
+          properties: {
+            file_path: { type: "string" },
+            contents: { type: "string" }
+          },
+          required: ["file_path", "contents"]
+        }
+      }
+    ];
+    const normalized = normalizeSDKToolCall({
+      type: "mcp__filesystem__write_file",
+      args: {
+        file_path: "marker.txt",
+        contents: "ok"
+      }
+    }, clientTools);
+
+    expect(normalized).toEqual({
+      name: "mcp",
+      arguments: {
+        providerIdentifier: "client",
+        toolName: "mcp__filesystem__write_file",
+        args: {
+          file_path: "marker.txt",
+          contents: "ok"
+        }
+      }
+    });
+    expect(isForwardableSDKToolCall(normalized, clientTools)).toBe(true);
+  });
+
+  it("does not forward SDK tool calls that were not exposed by the harness", () => {
+    expect(isForwardableSDKToolCall({
+      name: "unexpected_tool",
+      arguments: { path: "marker.txt", content: "ok" }
+    })).toBe(false);
+    expect(isForwardableSDKToolCall({
+      name: "mcp",
+      arguments: {
+        providerIdentifier: "github",
+        toolName: "create_issue",
+        args: { title: "Bug", body: "Details" }
+      }
+    })).toBe(false);
   });
 
   it("waits for complete direct dynamic harness tool arguments before forwarding", () => {
