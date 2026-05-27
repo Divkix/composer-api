@@ -2247,6 +2247,15 @@ public enum OpenAICompatibility {
             copy("path", as: pathPropertyAliases())
             copy("oldString", as: oldTextAliases())
             copy("newString", as: newTextAliases())
+            if let editArray = editArrayArgumentValue(arguments, tool: tool, properties: properties, context: context) {
+                output[editArray.key] = editArray.value
+                if let key = firstArgument(in: arguments, keys: oldTextAliases())?.key {
+                    consumed.insert(key)
+                }
+                if let key = firstArgument(in: arguments, keys: newTextAliases())?.key {
+                    consumed.insert(key)
+                }
+            }
         case "grep":
             copy("pattern", as: ["query", "regex", "search"])
             copy("path", as: pathPropertyAliases() + ["directory"])
@@ -3386,6 +3395,68 @@ public enum OpenAICompatibility {
         output[key] = value
     }
 
+    private struct EditArrayArgumentProperty {
+        var key: String
+        var itemTool: OpenAIToolSpec
+        var pathKey: String?
+        var oldKey: String
+        var newKey: String
+    }
+
+    private struct NamedJSONValue {
+        var key: String
+        var value: JSONValue
+    }
+
+    private static func editArrayArgumentValue(
+        _ arguments: [String: JSONValue],
+        tool: OpenAIToolSpec,
+        properties: [String],
+        context: ToolCallContext?
+    ) -> NamedJSONValue? {
+        guard let editArray = editArrayArgumentProperty(tool: tool, properties: properties),
+              let oldText = firstArgument(in: arguments, keys: oldTextAliases())?.value,
+              let newText = firstArgument(in: arguments, keys: newTextAliases())?.value else {
+            return nil
+        }
+        var item: [String: JSONValue] = [
+            editArray.oldKey: normalizeToolArgumentValue(oldText, property: editArray.oldKey, tool: editArray.itemTool, context: context),
+            editArray.newKey: normalizeToolArgumentValue(newText, property: editArray.newKey, tool: editArray.itemTool, context: context)
+        ]
+        if let pathKey = editArray.pathKey,
+           let path = firstArgument(in: arguments, keys: pathPropertyAliases())?.value,
+           shouldIncludeOptionalPath(path) {
+            item[pathKey] = normalizeToolArgumentValue(path, property: pathKey, tool: editArray.itemTool, context: context)
+        }
+        return NamedJSONValue(key: editArray.key, value: .array([.object(item)]))
+    }
+
+    private static func editArrayArgumentProperty(tool: OpenAIToolSpec, properties: [String]) -> EditArrayArgumentProperty? {
+        for candidate in ["edits", "replacements", "changes", "operations", "items"] {
+            guard let key = propertyName(matching: [candidate], in: properties),
+                  case .object(let propertySchema)? = parameterPropertySchema(key, tool: tool) else {
+                continue
+            }
+            let arraySchema = preferredArraySchema(propertySchema) ?? propertySchema
+            guard directSchemaLooksArray(arraySchema) else { continue }
+            let itemSchema = schemaWithInheritedDefinitions(arraySchema["items"], root: .object(arraySchema))
+            let itemTool = OpenAIToolSpec(name: tool.name, description: tool.description, parameters: itemSchema)
+            let itemProperties = parameterPropertyNames(itemTool)
+            guard let oldKey = propertyName(matching: oldTextAliases(), in: itemProperties),
+                  let newKey = propertyName(matching: newTextAliases(), in: itemProperties) else {
+                continue
+            }
+            return EditArrayArgumentProperty(
+                key: key,
+                itemTool: itemTool,
+                pathKey: propertyName(matching: pathPropertyAliases(), in: itemProperties),
+                oldKey: oldKey,
+                newKey: newKey
+            )
+        }
+        return nil
+    }
+
     private static func commandStyleFileToolSupports(_ canonical: String, tool: OpenAIToolSpec, properties: [String]) -> Bool {
         guard ["write", "read", "edit", "delete"].contains(canonical),
               propertyName(matching: operationPropertyAliases(), in: properties) != nil,
@@ -3396,8 +3467,9 @@ public enum OpenAICompatibility {
         case "write":
             return propertyName(matching: fileContentAliases(), in: properties) != nil
         case "edit":
-            return propertyName(matching: oldTextAliases(), in: properties) != nil
-                && propertyName(matching: newTextAliases(), in: properties) != nil
+            return (propertyName(matching: oldTextAliases(), in: properties) != nil
+                && propertyName(matching: newTextAliases(), in: properties) != nil)
+                || editArrayArgumentProperty(tool: tool, properties: properties) != nil
         default:
             return true
         }
@@ -4183,9 +4255,9 @@ public enum OpenAICompatibility {
         case "delete":
             return toolCanonical == "delete" && has(pathPropertyAliases())
         case "edit":
-            return has(pathPropertyAliases())
-                && has(oldTextAliases())
-                && has(newTextAliases())
+            let editArray = editArrayArgumentProperty(tool: tool, properties: properties)
+            return (has(pathPropertyAliases()) || editArray?.pathKey != nil)
+                && ((has(oldTextAliases()) && has(newTextAliases())) || editArray != nil)
         case "grep":
             return has(["pattern", "query", "regex"])
         case "glob":

@@ -4462,6 +4462,72 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertNil(arguments["newString"])
     }
 
+    func testChatToolCallsMapSDKEditToArrayReplacementSchemas() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[{"role":"user","content":"edit app"}],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"multi_edit",
+                "parameters":{
+                  "type":"object",
+                  "additionalProperties":false,
+                  "properties":{
+                    "path":{"type":"string"},
+                    "edits":{
+                      "type":"array",
+                      "items":{
+                        "type":"object",
+                        "additionalProperties":false,
+                        "properties":{
+                          "oldText":{"type":"string"},
+                          "newText":{"type":"string"}
+                        },
+                        "required":["oldText","newText"]
+                      },
+                      "minItems":1
+                    }
+                  },
+                  "required":["path","edits"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+
+        let object = OpenAICompatibility.chatCompletionResponse(
+            id: "chatcmpl_edit_array",
+            created: 1,
+            prepared: prepared,
+            output: CursorSDKOutput(text: "", toolCalls: [
+                CursorToolCall(name: "edit", arguments: [
+                    "path": .string("src/App.tsx"),
+                    "oldString": .string("return null"),
+                    "newString": .string("return <main />")
+                ])
+            ], agentID: "agent-test", runID: "run-test")
+        )
+
+        let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
+        let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        let toolCalls = try XCTUnwrap(message["tool_calls"] as? [[String: Any]])
+        let function = try XCTUnwrap(toolCalls.first?["function"] as? [String: Any])
+        let arguments = try decodedArguments(function)
+        let edits = try XCTUnwrap(arguments["edits"] as? [[String: Any]])
+
+        XCTAssertEqual(function["name"] as? String, "multi_edit")
+        XCTAssertEqual(arguments["path"] as? String, "src/App.tsx")
+        XCTAssertEqual(edits.count, 1)
+        XCTAssertEqual(edits.first?["oldText"] as? String, "return null")
+        XCTAssertEqual(edits.first?["newText"] as? String, "return <main />")
+        XCTAssertNil(arguments["oldString"])
+        XCTAssertNil(arguments["newString"])
+    }
+
     func testChatToolCallsMapFullPiBuiltinSchemaMatrix() throws {
         let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
         {
@@ -6901,6 +6967,68 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual(functionCall["name"] as? String, "apply_patch")
         XCTAssertNil(arguments["path"])
         XCTAssertEqual(arguments["patch"] as? String, patch)
+    }
+
+    func testResponsesFunctionCallsMapSDKEditToArrayReplacementSchemas() throws {
+        let prepared = try OpenAICompatibility.prepareResponsesRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "input":"edit app",
+          "tools":[
+            {
+              "type":"function",
+              "name":"apply_edits",
+              "parameters":{
+                "type":"object",
+                "additionalProperties":false,
+                "properties":{
+                  "changes":{
+                    "type":"array",
+                    "items":{
+                      "type":"object",
+                      "additionalProperties":false,
+                      "properties":{
+                        "filePath":{"type":"string"},
+                        "oldString":{"type":"string"},
+                        "newString":{"type":"string"}
+                      },
+                      "required":["filePath","oldString","newString"]
+                    },
+                    "minItems":1
+                  }
+                },
+                "required":["changes"]
+              }
+            }
+          ]
+        }
+        """#.utf8))
+        let toolCall = CursorToolCall(name: "edit", arguments: [
+            "path": .string("src/App.tsx"),
+            "oldString": .string("return null"),
+            "newString": .string("return <main />")
+        ])
+
+        let object = OpenAICompatibility.responseObject(
+            id: "resp_edit_array",
+            created: 1,
+            prepared: prepared,
+            output: CursorSDKOutput(text: "", toolCalls: [toolCall], agentID: "agent-test", runID: "run-test")
+        )
+
+        let output = try XCTUnwrap(object["output"] as? [[String: Any]])
+        let functionCall = try XCTUnwrap(output.first { ($0["type"] as? String) == "function_call" })
+        let arguments = try decodedArguments(functionCall)
+        let changes = try XCTUnwrap(arguments["changes"] as? [[String: Any]])
+
+        XCTAssertEqual(functionCall["name"] as? String, "apply_edits")
+        XCTAssertEqual(changes.count, 1)
+        XCTAssertEqual(changes.first?["filePath"] as? String, "src/App.tsx")
+        XCTAssertEqual(changes.first?["oldString"] as? String, "return null")
+        XCTAssertEqual(changes.first?["newString"] as? String, "return <main />")
+        XCTAssertNil(arguments["path"])
+        XCTAssertNil(arguments["oldText"])
+        XCTAssertNil(arguments["newText"])
     }
 
     func testResponsesToolResultsFeedGenericHarnessToolsBackWithSDKBuiltinNames() throws {
