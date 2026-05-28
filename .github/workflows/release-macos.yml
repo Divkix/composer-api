@@ -117,6 +117,8 @@ jobs:
           security import "$cert_path" -P "$MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain_path"
           security list-keychains -d user -s "$keychain_path" login.keychain-db
           security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain_path"
+          security find-identity -v -p codesigning
+          security find-identity -v -p codesigning | grep -F "$CURSOR_API_CODE_SIGN_IDENTITY"
         env:
           MACOS_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_CERTIFICATE_BASE64 }}
           MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
@@ -167,6 +169,33 @@ jobs:
           npx wrangler r2 object put "$R2_RELEASE_BUCKET/appcast.xml" \
             --file "$appcast" \
             --content-type application/rss+xml
+
+      - name: Verify published release files
+        run: |
+          set -euo pipefail
+
+          retry() {
+            label="$1"
+            shift
+            for attempt in $(seq 1 12); do
+              if "$@"; then
+                return 0
+              fi
+              if [ "$attempt" -lt 12 ]; then
+                echo "$label is not ready yet; retrying in 5s..."
+                sleep 5
+              fi
+            done
+            echo "$label did not become available" >&2
+            return 1
+          }
+
+          retry "appcast" curl -fsSL "$CURSOR_API_APPCAST_URL" -o /tmp/api-for-cursor-appcast.xml
+          grep -q 'sparkle:edSignature=' /tmp/api-for-cursor-appcast.xml
+          grep -q "${CURSOR_API_RELEASE_BASE_URL}/" /tmp/api-for-cursor-appcast.xml
+
+          retry "latest DMG" curl -fsSL --range 0-0 "${CURSOR_API_RELEASE_BASE_URL}/API-for-Cursor-latest.dmg" -o /tmp/api-for-cursor-latest-byte
+          [ -s /tmp/api-for-cursor-latest-byte ]
 
       - name: Upload GitHub Actions artifacts
         uses: actions/upload-artifact@v4
