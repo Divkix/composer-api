@@ -138,6 +138,7 @@ jobs:
           echo "name=$(basename "$dmg_path")" >> "$GITHUB_OUTPUT"
 
       - name: Notarize DMG
+        timeout-minutes: 50
         run: macos/CursorAPI/Scripts/notarize-dmg.sh "${{ steps.dmg.outputs.path }}"
 
       - name: Generate Sparkle appcast

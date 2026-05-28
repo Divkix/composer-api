@@ -69,6 +69,13 @@ commit, cut a new version tag instead of rerunning the stale tag workflow.
 
 The `Release macOS app` workflow builds, signs, notarizes, generates the appcast, uploads to R2, and attaches release assets to the GitHub release.
 
+Apple notarization is bounded by `APPLE_NOTARY_TIMEOUT`, defaulting to `45m`.
+If Apple leaves a submission pending past that timeout, the workflow fails
+without cancelling Apple's server-side submission. Cut a new version tag after
+confirming Apple status or retrying during a healthier notary service window.
+If Apple rejects a DMG, the workflow prints the notary log so the invalid
+binary, entitlement, or signing issue is visible in the Actions output.
+
 ## Verify A Release
 
 Run the public release gate:
