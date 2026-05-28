@@ -48,6 +48,10 @@ The Worker binding is named `RELEASES`, and the public routes are:
 - `https://api-for-composer.standardagents.ai/appcast.xml`
 - `https://api-for-composer.standardagents.ai/releases/<dmg-name>`
 
+Release workflows must pass `--remote` to `wrangler r2 object put`; without it,
+Wrangler writes to the local development R2 store and the public routes continue
+to return 404.
+
 The old hosted API domain remains configured until the cutover is verified. Do not add redirects or delete hosted API routes until the local app release is confirmed.
 
 For webhook-based notarization finalization, configure these Worker secrets:

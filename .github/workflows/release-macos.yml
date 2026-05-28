@@ -224,12 +224,15 @@ jobs:
           dmg_name="${{ steps.dmg.outputs.name }}"
           appcast="${{ steps.appcast.outputs.path }}"
           npx wrangler r2 object put "$R2_RELEASE_BUCKET/releases/$dmg_name" \
+            --remote \
             --file "$dmg" \
             --content-type application/x-apple-diskimage
           npx wrangler r2 object put "$R2_RELEASE_BUCKET/releases/API-for-Cursor-latest.dmg" \
+            --remote \
             --file "$dmg" \
             --content-type application/x-apple-diskimage
           npx wrangler r2 object put "$R2_RELEASE_BUCKET/appcast.xml" \
+            --remote \
             --file "$appcast" \
             --content-type application/rss+xml
 
