@@ -60,6 +60,9 @@ const defaultDeps: Deps = {
   randomUUID: () => crypto.randomUUID()
 };
 
+const LEGACY_CURSOR_API_HOST = "cursor-api.standardagents.ai";
+const CANONICAL_PUBLIC_HOST = "api-for-composer.standardagents.ai";
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     return handleRequest(request, env, ctx, defaultDeps);
@@ -67,8 +70,10 @@ export default {
 };
 
 export async function handleRequest(request: Request, env: Env, ctx: ExecutionContext, deps: Deps = defaultDeps): Promise<Response> {
-  if (request.method === "OPTIONS") return optionsResponse();
   const url = new URL(request.url);
+  const legacyHostRedirect = redirectLegacyCursorApiHost(url);
+  if (legacyHostRedirect) return legacyHostRedirect;
+  if (request.method === "OPTIONS") return optionsResponse();
 
   try {
     if (url.pathname === "/api/signup" && request.method === "POST") {
@@ -108,6 +113,13 @@ export async function handleRequest(request: Request, env: Env, ctx: ExecutionCo
   } catch (error) {
     return errorResponse(error);
   }
+}
+
+function redirectLegacyCursorApiHost(url: URL): Response | null {
+  if (url.hostname !== LEGACY_CURSOR_API_HOST) return null;
+  const target = new URL(url.toString());
+  target.hostname = CANONICAL_PUBLIC_HOST;
+  return Response.redirect(target.toString(), 308);
 }
 
 const LATEST_DMG_NAME = "API-for-Cursor-latest.dmg";

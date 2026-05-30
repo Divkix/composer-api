@@ -60,6 +60,24 @@ function fakeR2(objects: Record<string, { body: string; contentType?: string }>)
 }
 
 describe("Worker", () => {
+  it("redirects the legacy cursor-api host to the canonical public app host", async () => {
+    const db = new FakeD1();
+    const env = makeEnv(db, () => {
+      throw new Error("assets should not be fetched for legacy host redirects");
+    });
+    const { deps } = fakeDeps();
+
+    const response = await handleRequest(
+      new Request("https://cursor-api.standardagents.ai/chat?from=legacy"),
+      env,
+      fakeCtx(),
+      deps
+    );
+
+    expect(response.status).toBe(308);
+    expect(response.headers.get("location")).toBe("https://api-for-composer.standardagents.ai/chat?from=legacy");
+  });
+
   it("redirects the public download URL to the latest DMG release object", async () => {
     const db = new FakeD1();
     const env = makeEnv(db);
