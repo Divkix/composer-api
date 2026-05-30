@@ -842,7 +842,7 @@ struct PillActionButton: View {
 struct CursorLogo: View {
     var body: some View {
         Group {
-            if let image = Bundle.module.url(forResource: "cursor-logo", withExtension: "png").flatMap(NSImage.init(contentsOf:)) {
+            if let image = CursorAPIResources.image(named: "cursor-logo") {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFit()
@@ -1718,10 +1718,7 @@ private extension AgentIntegrationID {
 
     func iconImage(darkMode: Bool) -> NSImage? {
         let darkFileName = "\(iconFileName)-dark"
-        let resourceName = darkMode && Bundle.module.url(forResource: darkFileName, withExtension: "png") != nil ? darkFileName : iconFileName
-        guard let url = Bundle.module.url(forResource: resourceName, withExtension: "png") else {
-            return nil
-        }
-        return NSImage(contentsOf: url)
+        let resourceName = darkMode && CursorAPIResources.url(forResource: darkFileName, withExtension: "png") != nil ? darkFileName : iconFileName
+        return CursorAPIResources.image(named: resourceName)
     }
 }

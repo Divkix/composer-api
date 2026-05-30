@@ -295,9 +295,8 @@ final class CursorAPIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDeleg
 
     private func installApplicationIcon() {
         let iconURLs = [
-            Bundle.module.url(forResource: "APIForCursor", withExtension: "png"),
-            Bundle.main.url(forResource: "APIForCursor", withExtension: "png"),
-            Bundle.main.url(forResource: "APIForCursor", withExtension: "icns")
+            CursorAPIResources.url(forResource: "APIForCursor", withExtension: "png"),
+            CursorAPIResources.url(forResource: "APIForCursor", withExtension: "icns")
         ].compactMap(\.self)
 
         for iconURL in iconURLs {
