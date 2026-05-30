@@ -45,7 +45,7 @@
       <header class="site-header">
         <div class="header-bar glass">
           <a class="brand" href="/" aria-label="API for Cursor">
-            <img class="brand-icon" src="/api-for-cursor-icon.png" alt="" width="36" height="36" />
+            <img class="brand-icon" src="/api-for-cursor-icon.png" alt="" width="28" height="28" />
             <span class="brand-text">API for Cursor</span>
           </a>
           <nav class="header-nav" aria-label="Primary navigation">
@@ -61,53 +61,69 @@
       </header>
 
       <section class="hero" aria-labelledby="hero-title">
-        <button type="button" class="notice-chip glass" data-endpoint-modal-open>
-          <span class="notice-dot" aria-hidden="true"></span>
-          <span>Looking for the hosted API endpoints?</span>
-          <i data-lucide="arrow-right" data-size="14"></i>
-        </button>
+        <div class="hero-inner">
+          <div class="hero-content">
+            <button type="button" class="notice-chip glass" data-endpoint-modal-open>
+              <span class="notice-dot" aria-hidden="true"></span>
+              <span>Looking for the hosted API endpoints?</span>
+              <i data-lucide="arrow-right" data-size="14"></i>
+            </button>
 
-        <div class="hero-icon-wrap" aria-hidden="true">
-          <img class="hero-icon" src="/api-for-cursor-icon.png" alt="" width="120" height="120" />
+            <h1 id="hero-title">Use Cursor's models with any harness</h1>
+
+            <ul class="hero-logos" aria-label="Supported coding agents">
+              <li class="hero-logo">
+                <span class="hero-logo-mark"><img src="/provider-logos/opencode.png" alt="" loading="lazy" /></span>
+                <span>OpenCode</span>
+              </li>
+              <li class="hero-logo">
+                <span class="hero-logo-mark hero-logo-mark--ink"><img src="/provider-logos/codex.svg" alt="" loading="lazy" /></span>
+                <span>Codex</span>
+              </li>
+              <li class="hero-logo">
+                <span class="hero-logo-mark"><img src="/provider-logos/vscode.png" alt="" loading="lazy" /></span>
+                <span>VS&nbsp;Code</span>
+              </li>
+              <li class="hero-logo">
+                <span class="hero-logo-mark"><img src="/provider-logos/cline.png" alt="" loading="lazy" /></span>
+                <span>Cline</span>
+              </li>
+              <li class="hero-logo">
+                <span class="hero-logo-mark"><img src="/provider-logos/kilo.svg" alt="" loading="lazy" /></span>
+                <span>Kilo&nbsp;Code</span>
+              </li>
+              <li class="hero-logo">
+                <span class="hero-logo-mark hero-logo-mark--ink"><img src="/provider-logos/pi.svg" alt="" loading="lazy" /></span>
+                <span>pi</span>
+              </li>
+            </ul>
+
+            <p class="hero-copy">
+              API for Cursor runs a local, OpenAI-compatible server on your Mac, so OpenCode,
+              Codex, VS&nbsp;Code, Cline, and any client that speaks <code>/v1</code> can use
+              Cursor Composer models against your real project files.
+            </p>
+
+            <div class="hero-actions">
+              <a class="btn btn-primary btn-lg" href="/download">
+                <i data-lucide="download" data-size="20"></i>
+                <span class="btn-stack">
+                  <strong>Download for macOS</strong>
+                  <small>Free local app</small>
+                </span>
+              </a>
+            </div>
+          </div>
+
+          <figure class="hero-shot" aria-label="API for Cursor showing the local API and agent setup">
+            <img
+              src="/screenshots/api-for-cursor-agent-setup.webp"
+              alt="API for Cursor app: a running local API with Root, Chat, Responses, and Models endpoints, plus one-click agent setup for OpenCode, Codex, VS Code, Cline, Kilo Code, and pi."
+              width="1500"
+              height="1212"
+            />
+          </figure>
         </div>
-
-        <h1 id="hero-title">
-          Run Composer models in your
-          <span class="hero-title-accent">local coding agents</span>
-        </h1>
-
-        <p class="hero-copy">
-          API for Cursor runs a local, OpenAI-compatible server on your Mac, so OpenCode,
-          Codex, VS&nbsp;Code, Cline, and any client that speaks <code>/v1</code> can use
-          Cursor Composer models against your real project files.
-        </p>
-
-        <div class="hero-actions">
-          <a class="btn btn-primary btn-lg" href="/download">
-            <i data-lucide="download" data-size="20"></i>
-            <span class="btn-stack">
-              <strong>Download for macOS</strong>
-              <small>Free local app</small>
-            </span>
-          </a>
-          <button class="btn btn-glass btn-lg" type="button" data-copy="http://127.0.0.1:8787/v1">
-            <span class="btn-stack">
-              <strong class="copy-label">Copy local base URL</strong>
-              <small><code>http://127.0.0.1:8787/v1</code></small>
-            </span>
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="copy-icon lucide-icon lucide lucide-copy"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>
-            <i data-lucide="check" data-size="18" class="copied-icon"></i>
-          </button>
-        </div>
-
-        <figure class="hero-shot" aria-label="API for Cursor showing the local API and agent setup">
-          <img
-            src="/screenshots/api-for-cursor-agent-setup.webp"
-            alt="API for Cursor app: a running local API with Root, Chat, Responses, and Models endpoints, plus one-click agent setup for OpenCode, Codex, VS Code, Cline, Kilo Code, and pi."
-            width="765"
-            height="595"
-          />
-        </figure>
       </section>
 
       <section id="features" class="features" aria-label="Why a local API">
